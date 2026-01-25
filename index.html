@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>打答 - 四人计分</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.1.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.1.0/firebase-database-compat.js"></script>
+    <style>
+        .zebra-stripe:nth-child(odd) {
+            background-color: #f9fafb;
+        }
+
+        .modal-overlay {
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+
+        input::-webkit-outer-spin-button,
+        input::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+
+        .active-session {
+            border-left: 4px solid #3b82f6;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-50 text-gray-900 min-h-screen">
+
+    <div id="loadingStatus" class="fixed top-0 left-0 w-full bg-blue-500 text-white text-xs py-1 text-center hidden">
+        正在连接...
+    </div>
+
+    <div id="app" class="max-w-md mx-auto p-4 pb-20">
+        <div id="view-container"></div>
+    </div>
+
+    <div id="modal" class="fixed inset-0 modal-overlay flex items-center justify-center p-4 z-50 hidden">
+        <div class="bg-white rounded-lg w-full max-w-sm p-6 shadow-xl">
+            <h3 id="modalTitle" class="text-lg font-bold mb-4">提示</h3>
+            <div id="modalBody" class="mb-6"></div>
+            <div class="flex justify-end space-x-3">
+                <button onclick="closeModal()" class="px-4 py-2 text-gray-500">取消</button>
+                <button id="modalConfirmBtn" class="px-4 py-2 bg-blue-500 text-white rounded">确认</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- 1. Firebase 配置 ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyAE2JJQ2w_fLcwl0tlF9qcwRCNes9oICsY",
+            authDomain: "calculator-f4869.firebaseapp.com",
+            databaseURL: "https://calculator-f4869-default-rtdb.firebaseio.com",
+            projectId: "calculator-f4869",
+            storageBucket: "calculator-f4869.firebasestorage.app",
+            messagingSenderId: "657645216794",
+            appId: "1:657645216794:web:1e2092b1fce925b6b09da3",
+            measurementId: "G-TM8246NSRV"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        // --- 2. 状态管理 ---
+        let state = {
+            view: 'home', // home, create, join, setup, room, calculate
+            roomId: null,
+            roomData: null,
+            expandedSessions: new Set(), // 仅本地存储
+            viewMode: 'table' // table, card
+        };
+
+        // --- 3. 核心工具函数 ---
+        const showLoading = (show) => document.getElementById('loadingStatus').classList.toggle('hidden', !show);
+
+        function navigate(view) {
+            state.view = view;
+            render();
+        }
+
+        function parseInput(str) {
+            return str.split(/[\s,，]+/).filter(t => t.trim() !== "");
+        }
+
+        // --- 4. 数据库交互 ---
+        async function joinRoom(id, isCreate = false) {
+            if (!/^\d+$/.test(id)) return alert("房间号必须是数字");
+            showLoading(true);
+
+            const snapshot = await db.ref('rooms/' + id).once('value');
+            const exists = snapshot.exists();
+
+            if (isCreate && exists) {
+                const modalContent = `
+                    <div class="text-left">
+                        <p class="mb-4">房间号 <strong>${id}</strong> 已存在。</p>
+                        <p class="mb-4 text-sm text-gray-600">您可以选择：</p>
+                        <div class="space-y-2">
+                            <button onclick="closeModal()" class="w-full bg-gray-100 text-gray-700 py-3 rounded-lg font-bold hover:bg-gray-200">重新创建 (返回)</button>
+                            <button onclick="confirmEnterRoom('${id}')" class="w-full bg-blue-500 text-white py-3 rounded-lg font-bold hover:bg-blue-600">进入该房间</button>
+                        </div>
+                    </div>
+                `;
+                showModal("房间已存在", modalContent, null);
+                // Note: We don't proceed here. User must click "Enter Room" to proceed.
+                return;
+            } else if (!isCreate && !exists) {
+                showLoading(false);
+                return showModal("提示", "房间不存在，请检查房间号", closeModal);
+            }
+
+            enterRoom(id);
+        }
+
+        function confirmEnterRoom(id) {
+            closeModal();
+            enterRoom(id);
+        }
+
+        function enterRoom(id) {
+            state.roomId = id;
+            db.ref('rooms/' + id).on('value', (snap) => {
+                state.roomData = snap.val();
+                showLoading(false);
+                if (!state.roomData || !state.roomData.players) {
+                    navigate('setup');
+                } else {
+                    // Item 21: Default to expanded for the latest session
+                    if (state.roomData.sessions && state.roomData.sessions.length > 0) {
+                        const latestSessionId = state.roomData.sessions[state.roomData.sessions.length - 1].id;
+                        state.expandedSessions.add(latestSessionId);
+                    }
+                    if (state.view !== 'calculate') navigate('room');
+                }
+            });
+        }
+
+        function exitRoom() {
+            if (state.roomId) db.ref('rooms/' + state.roomId).off();
+            state.roomId = null;
+            state.roomData = null;
+            navigate('home');
+        }
+
+        // --- 5. 业务逻辑 ---
+        function submitSetup() {
+            const names = parseInput(document.getElementById('playerNames').value);
+            if (names.length !== 4) return alert("请输入正好4个靓仔的名字");
+
+            db.ref('rooms/' + state.roomId).update({
+                players: names,
+                unitScore: 0.3,
+                currentSessionId: 1,
+                sessions: [{ id: 1, rounds: [] }],
+                createdAt: Date.now()
+            });
+        }
+
+        function openUnitScoreModal() {
+            showModal("修改每分金额", "请输入每分多少钱：", () => {
+                const val = parseFloat(document.getElementById('modalInput').value);
+                if (isNaN(val) || val <= 0) return alert("请输入正数");
+                db.ref(`rooms/${state.roomId}/unitScore`).set(parseFloat(val.toFixed(1)));
+                closeModal();
+            }, true, state.roomData.unitScore);
+        }
+
+        function startNewSession() {
+            showModal("确认开始新场次？", "开始后将无法修改之前的场次数据。", () => {
+                const sessions = state.roomData.sessions || [];
+                const newId = sessions.length + 1;
+                sessions.push({ id: newId, rounds: [] });
+                db.ref('rooms/' + state.roomId).update({
+                    sessions: sessions,
+                    currentSessionId: newId
+                });
+                closeModal();
+            });
+        }
+
+        function openScoreModal(sessionIdx, roundIdx = null) {
+            const isEdit = roundIdx !== null;
+            const currentRounds = state.roomData.sessions[sessionIdx].rounds || [];
+            const defaultValue = isEdit ? currentRounds[roundIdx].scores.join(' ') : "";
+
+            showModal(isEdit ? "修改分数" : "添加计分", "请输入4个分数（空格或逗号分隔）：", () => {
+                const scores = parseInput(document.getElementById('modalInput').value).map(Number);
+                if (scores.length !== 4 || scores.some(isNaN)) return alert("请输入4个有效数字");
+
+                if (isEdit) {
+                    currentRounds[roundIdx].scores = scores;
+                } else {
+                    currentRounds.push({ roundIndex: currentRounds.length, scores: scores });
+                }
+
+                db.ref(`rooms/${state.roomId}/sessions/${sessionIdx}/rounds`).set(currentRounds);
+                // Item 23: Update last score time
+                db.ref(`rooms/${state.roomId}/lastScoreTime`).set(Date.now());
+                closeModal();
+            }, true, defaultValue);
+        }
+
+        // --- 菜单功能 ---
+        function toggleMenu() {
+            state.showMenu = !state.showMenu;
+            render();
+        }
+
+        async function menuViewRooms() {
+            state.showMenu = false;
+            render();
+            showLoading(true);
+            const snapshot = await db.ref('rooms').once('value');
+            showLoading(false);
+            const rooms = snapshot.val();
+
+            let content = "";
+            if (!rooms) {
+                content = "暂无房间";
+            } else {
+                content = Object.keys(rooms).map(id => {
+                    const r = rooms[id];
+                    const players = r.players ? r.players.join('，') : '（未设置玩家）';
+                    return `<div class="mb-2 border-b pb-1"><strong>房间号：${id}</strong><br><span class="text-xs text-gray-500">${players}</span></div>`;
+                }).join('');
+            }
+            showModal("现有房间", content, closeModal);
+        }
+
+        function menuCleanRoom() {
+            state.showMenu = false;
+            render();
+            showModal("清理房间", "请输入管理员密码：", () => {
+                const pwd = document.getElementById('modalInput').value;
+                if (pwd !== 'clean') {
+                    // 使用自定义模态框替代 alert
+                    showModal("错误", "密码错误，请重试。", closeModal);
+                    return;
+                }
+                closeModal();
+                setTimeout(showCleanRoomList, 200);
+            }, true);
+        }
+
+        async function showCleanRoomList() {
+            showLoading(true);
+            const snapshot = await db.ref('rooms').once('value');
+            showLoading(false);
+            const rooms = snapshot.val();
+
+            let content = "";
+            if (!rooms) {
+                content = "暂无房间";
+            } else {
+                content = Object.keys(rooms).map(id => {
+                    const r = rooms[id];
+                    const players = r.players ? r.players.join('，') : '（未设置玩家）';
+                    return `
+                        <div class="flex justify-between items-center mb-2 border-b pb-1">
+                            <div class="flex-1">
+                                <strong>房间号：${id}</strong><br>
+                                <span class="text-xs text-gray-500">${players}</span>
+                            </div>
+                            <button onclick="confirmDeleteRoom('${id}')" class="bg-red-500 hover:bg-red-600 text-white text-xs px-3 py-1 rounded ml-2 shadow-sm transition-colors">删除</button>
+                        </div>`;
+                }).join('');
+            }
+            showModal("清理房间列表", content, null);
+        }
+
+        function confirmDeleteRoom(roomId) {
+            showModal("确认删除", `确定要删除房间 <span class="font-bold text-red-500">${roomId}</span> 及其所有数据吗？<br><br><span class="text-xs text-gray-500">此操作不可恢复。</span>`, () => {
+                db.ref('rooms/' + roomId).remove()
+                    .then(() => {
+                        // 使用 showModal 替代 alert，避免显示 file://
+                        showModal("删除成功", "房间 " + roomId + " 已删除", () => {
+                            closeModal();
+                            setTimeout(showCleanRoomList, 200);
+                        });
+                    })
+                    .catch(e => showModal("删除失败", "删除失败：" + e.message, closeModal));
+            });
+        }
+
+        function menuUsage() {
+            state.showMenu = false;
+            render();
+            const content = `
+                <div class="text-sm space-y-3 text-left">
+                    <p><strong>1. 如何创建房间：</strong>点击"创建房间"按钮，输入房间号，点击"确认"按钮。</p>
+                    <p><strong>2. 如何加入房间：</strong>点击"加入房间"按钮，输入房间号，点击"确认"按钮。</p>
+                    <p><strong>3. 如何修改每分金额：</strong>点击"每分金额"后面的"修改"按钮，输入新的金额，点击"确认"按钮。</p>
+                    <p><strong>4. 如何添加场次：</strong>点击表格头部的"添加场次"按钮，点击"确认"按钮。</p>
+                    <p><strong>5. 如何添加本局计分：</strong>点击最新局的"计分"按钮，按顺序输入玩家A、B、C、D的得分，点击"确认"按钮。</p>
+                    <p><strong>6. 如何计算结果：</strong>点击"计算结果"按钮，弹出一个窗口，显示计算结果。</p>
+                    <p><strong>7. 计算公式：</strong><br>
+                    个人输赢 = (4人总分 - 个人总场次分数 × 4) × 每分金额<br>
+                    <span class="text-xs text-gray-400">个人总场次分数 = 个人在所有场次中的总分数<br>
+                    4人总分 = 所有玩家在所有场次中的总分数<br>
+                    每分金额 = 用户在软件中设置的每分金额</span></p>
+                </div>
+            `;
+            showModal("使用方法", content, closeModal);
+        }
+
+        function menuAbout() {
+            state.showMenu = false;
+            render();
+            const content = `
+                <div class="text-left space-y-2">
+                    <p><strong>软件名称：</strong>打答</p>
+                    <p><strong>作者：</strong>Kaishen</p>
+                    <p><strong>联系作者：</strong>先看"使用方法"，如果有问题，再联系作者。</p>
+                    <p><strong>软件目的：</strong>提供一个方便的打答记录和计分软件。</p>
+                    <p class="mt-4 italic text-gray-500 text-center">"赢钱非我意，但愿友长存。"</p>
+                </div>
+            `;
+            showModal("关于", content, closeModal);
+        }
+
+        // --- 6. 视图渲染 ---
+        function render() {
+            const container = document.getElementById('view-container');
+
+            // 基础布局：首页
+            if (state.view === 'home') {
+                container.innerHTML = `
+                    <div class="flex flex-col min-h-[80vh]">
+                        <div class="flex justify-end pt-2 relative">
+                            <button onclick="toggleMenu()" class="p-2 text-gray-600 hover:text-gray-900 focus:outline-none transition-colors rounded-full hover:bg-gray-100">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+                                </svg>
+                            </button>
+                            ${state.showMenu ? `
+                            <div class="absolute right-0 top-12 w-48 bg-white border border-gray-200 rounded-lg shadow-2xl z-50 text-base overflow-hidden animate-fade-in-down">
+                                <button onclick="menuViewRooms()" class="block w-full text-left px-4 py-3 hover:bg-blue-50 text-gray-700 hover:text-blue-600 border-b border-gray-100 transition-colors flex items-center">
+                                    <span class="mr-2">🏠</span> 查看现有房间
+                                </button>
+                                <button onclick="menuCleanRoom()" class="block w-full text-left px-4 py-3 hover:bg-red-50 text-gray-700 hover:text-red-600 border-b border-gray-100 transition-colors flex items-center">
+                                    <span class="mr-2">🗑️</span> 清理房间
+                                </button>
+                                <button onclick="menuUsage()" class="block w-full text-left px-4 py-3 hover:bg-green-50 text-gray-700 hover:text-green-600 border-b border-gray-100 transition-colors flex items-center">
+                                    <span class="mr-2">📖</span> 使用方法
+                                </button>
+                                <button onclick="menuAbout()" class="block w-full text-left px-4 py-3 hover:bg-purple-50 text-gray-700 hover:text-purple-600 transition-colors flex items-center">
+                                    <span class="mr-2">ℹ️</span> 关于
+                                </button>
+                            </div>
+                            ` : ''}
+                        </div>
+                        <div class="flex-1 flex flex-col justify-center pb-20">
+                            <h1 class="text-5xl font-black text-center mb-16 tracking-widest text-blue-600 drop-shadow-sm">打答</h1>
+                            <div class="flex flex-col space-y-6 px-8">
+                                <button onclick="navigate('create')" class="bg-blue-600 hover:bg-blue-700 text-white py-5 rounded-2xl font-bold text-xl shadow-lg active:scale-95 transition transform duration-200 flex items-center justify-center">
+                                    <span class="mr-2">➕</span> 创建房间
+                                </button>
+                                <button onclick="navigate('join')" class="bg-white border-2 border-blue-600 text-blue-600 hover:bg-blue-50 py-5 rounded-2xl font-bold text-xl shadow-md active:scale-95 transition transform duration-200 flex items-center justify-center">
+                                    <span class="mr-2">🔍</span> 加入房间
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            else if (state.view === 'create' || state.view === 'join') {
+                const isCreate = state.view === 'create';
+                container.innerHTML = `
+                    <div class="flex flex-col justify-center min-h-[80vh]">
+                        <h2 class="text-2xl font-bold mb-6 text-center">${isCreate ? '创建' : '加入'}房间</h2>
+                        <input type="number" id="roomNumInput" placeholder="输入房间号(数字)" class="w-full border-2 border-gray-200 rounded-lg p-4 mb-4 text-center text-xl focus:border-blue-500 outline-none">
+                        <button onclick="joinRoom(document.getElementById('roomNumInput').value, ${isCreate})" class="w-full bg-blue-500 text-white py-4 rounded-lg font-bold">确认</button>
+                        <button onclick="navigate('home')" class="w-full text-gray-500 mt-4 text-center">返回</button>
+                    </div>
+                `;
+            }
+            else if (state.view === 'setup') {
+                container.innerHTML = `
+                    <div class="flex flex-col justify-center min-h-[80vh]">
+                        <h2 class="text-xl font-bold mb-4">新房间设置</h2>
+                        <p class="text-gray-600 mb-2 text-sm">请输入4个靓仔名字（空格或逗号分隔）</p>
+                        <input type="text" id="playerNames" placeholder="小王 小李 阿强 大壮" class="w-full border-2 border-gray-200 rounded-lg p-4 mb-4 outline-none focus:border-blue-500">
+                        <button onclick="submitSetup()" class="w-full bg-blue-500 text-white py-4 rounded-lg font-bold">进入房间</button>
+                    </div>
+                `;
+            }
+            else if (state.view === 'room') {
+                renderRoom(container);
+            }
+            else if (state.view === 'calculate') {
+                renderCalculate(container);
+            }
+        }
+
+        function renderRoom(container) {
+            const d = state.roomData;
+            const players = d.players;
+            const sessions = [...d.sessions].reverse(); // 最新场次在上
+
+            let html = `
+                <div class="relative flex justify-center items-center mb-6">
+                    <h1 class="text-2xl font-black text-blue-600">打答</h1>
+                    <button onclick="exitRoom()" class="absolute right-0 text-red-500 font-medium text-sm border border-red-200 px-3 py-1 rounded">退出房间</button>
+                </div>
+
+                <div class="bg-white p-4 rounded-xl shadow-sm mb-4 border border-gray-100">
+                    <div class="flex items-center space-x-2">
+                        <span class="text-sm font-bold">每分金额:</span>
+                        <span class="font-bold text-lg mx-2">${d.unitScore}</span>
+                        <button onclick="openUnitScoreModal()" class="text-blue-500 text-sm font-bold">修改</button>
+                    </div>
+                </div>
+            `;
+
+            // Table View Only
+            html += `
+            <div class="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100 text-center text-sm">
+                <table class="w-full border-collapse">
+                    <thead>
+                        <tr class="bg-gray-800 text-white">
+                            <th class="py-3 px-1 font-medium">场次</th>
+                            ${players.map(p => `<th class="py-3 px-1 font-medium">${p}</th>`).join('')}
+                            <th class="py-3 px-1">
+                                <button onclick="startNewSession()" class="bg-green-500 text-white text-xs px-2 py-1 rounded shadow">添加场次</button>
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr class="bg-blue-50 font-bold border-b-2 border-blue-100">
+                            <td class="py-4">全部</td>
+                            ${players.map((_, i) => `<td>${calculateTotal(i)}</td>`).join('')}
+                            <td class="text-blue-600 cursor-pointer font-bold" onclick="navigate('calculate')">计算结果</td>
+                        </tr>
+                        ${sessions.map(s => renderSessionRow(s, d.players, d.currentSessionId)).join('')}
+                    </tbody>
+                </table>
+            </div>`;
+
+            container.innerHTML = html;
+        }
+
+        function renderSessionRow(session, players, currentId) {
+            const isCurrent = session.id === currentId;
+            const isExpanded = state.expandedSessions.has(session.id);
+            const sessionIdx = state.roomData.sessions.findIndex(s => s.id === session.id);
+
+            let rows = `
+                <tr class="zebra-stripe ${isCurrent ? 'active-session' : ''}">
+                    <td class="py-4 font-bold">${session.id}</td>
+                    ${players.map((_, i) => `<td>${calculateSessionTotal(session, i)}</td>`).join('')}
+                    <td class="text-blue-500 font-medium">
+                        <button onclick="toggleSession(${session.id})" class="font-bold">${isExpanded ? '收起' : '展开'}</button>
+                    </td>
+                </tr>
+            `;
+
+            if (isExpanded) {
+                const rounds = session.rounds || [];
+                // 顶部：如果是当前场次，显示 "本局" 行
+                if (isCurrent) {
+                    rows += `<tr class="text-[11px] text-gray-500 bg-white font-bold">
+                        <td class="py-2">本局</td>
+                        ${players.map((_, i) => `<td>${calculateSessionTotal(session, i)}-</td>`).join('')}
+                        <td><button class="text-xs text-blue-500 font-bold" onclick="openScoreModal(${sessionIdx})">计分</button></td>
+                    </tr>`;
+                }
+
+                // 局明细：当前累计-本局分
+                // 计算每局之前的累计分数
+                const roundsWithTotals = [];
+                const currentTotals = [0, 0, 0, 0];
+                rounds.forEach((r, rIdx) => {
+                    const before = [...currentTotals];
+                    r.scores.forEach((s, i) => currentTotals[i] += s);
+                    roundsWithTotals.push({
+                        roundIndex: rIdx,
+                        scores: r.scores,
+                        totalsBefore: before
+                    });
+                });
+
+                // 倒序显示 (最新的在上面)
+                roundsWithTotals.reverse().forEach((rData) => {
+                    rows += `<tr class="text-[11px] text-gray-500 bg-white">
+                        <td class="py-2">局 ${rData.roundIndex + 1}</td>
+                        ${rData.scores.map((s, pi) => {
+                        return `<td>${rData.totalsBefore[pi]}-${s}</td>`;
+                    }).join('')}
+                        <td>${isCurrent ? `<button class="text-xs text-blue-400 font-bold" onclick="openScoreModal(${sessionIdx}, ${rData.roundIndex})">修改</button>` : ''}</td>
+                    </tr>`;
+                });
+            }
+            return rows;
+        }
+
+        function toggleSession(id) {
+            if (state.expandedSessions.has(id)) state.expandedSessions.delete(id);
+            else state.expandedSessions.add(id);
+            render();
+        }
+
+        function calculateSessionTotal(session, playerIdx) {
+            if (!session.rounds) return 0;
+            return session.rounds.reduce((sum, r) => sum + (r.scores[playerIdx] || 0), 0);
+        }
+
+        function calculateTotal(playerIdx) {
+            return state.roomData.sessions.reduce((sum, s) => sum + calculateSessionTotal(s, playerIdx), 0);
+        }
+
+        function renderCalculate(container) {
+            const d = state.roomData;
+            const totalGroupScore = d.players.reduce((sum, _, i) => sum + calculateTotal(i), 0);
+            const results = d.players.map((name, i) => {
+                const personalTotal = calculateTotal(i);
+                // 公式: (4人总分 - 个人总分 * 4) * 每分金额
+                let winLoss = (totalGroupScore - (personalTotal * 4)) * d.unitScore;
+                // 格式化：保留1位小数，如果是整数则不显示小数
+                const formatted = Number(winLoss.toFixed(1));
+                return { name, val: formatted };
+            });
+
+            // Calculate duration
+            let durationStr = "未知";
+            if (d.createdAt && d.lastScoreTime) {
+                const diff = d.lastScoreTime - d.createdAt;
+                if (diff >= 0) {
+                    const hours = Math.floor(diff / (1000 * 60 * 60));
+                    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+                    durationStr = `${hours}小时${minutes}分钟`;
+                }
+            }
+
+            container.innerHTML = `
+                <div class="text-center py-10 flex flex-col min-h-[80vh] justify-center">
+                    <h2 class="text-xl font-bold mb-8">这4位靓仔的输赢情况如下</h2>
+                    <div class="space-y-6 mb-8">
+                        ${results.map(r => `
+                            <div class="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm px-8">
+                                <span class="text-lg font-medium">${r.name}</span>
+                                <span class="text-2xl font-black ${r.val > 0 ? 'text-red-500' : r.val < 0 ? 'text-green-600' : 'text-gray-400'}">
+                                    ${r.val > 0 ? '+' : ''}${r.val}
+                                </span>
+                            </div>
+                        `).join('')}
+                    </div>
+
+                    <div class="mb-12">
+                         <span class="inline-block bg-gray-100 text-gray-600 px-4 py-2 rounded-full text-sm font-medium">
+                            活动时长：${durationStr}
+                         </span>
+                    </div>
+
+                    <button onclick="navigate('room')" class="w-full bg-gray-800 text-white py-4 rounded-xl font-bold shadow-lg">返回房间</button>
+                </div>
+            `;
+        }
+
+        // --- 7. 弹窗系统 ---
+        let modalCallback = null;
+        function showModal(title, body, onConfirm, hasInput = false, inputDefault = "") {
+            document.getElementById('modalTitle').innerText = title;
+            document.getElementById('modalBody').innerHTML = `
+                <p class="text-gray-600 mb-4">${body}</p>
+                ${hasInput ? `<input type="text" id="modalInput" value="${inputDefault}" class="w-full border p-3 rounded outline-none focus:border-blue-500" autofocus>` : ''}
+            `;
+            document.getElementById('modal').classList.remove('hidden');
+            modalCallback = onConfirm;
+        }
+
+        function closeModal() {
+            document.getElementById('modal').classList.add('hidden');
+            modalCallback = null;
+        }
+
+        document.getElementById('modalConfirmBtn').onclick = () => {
+            if (modalCallback) modalCallback();
+        };
+
+        // 初始化渲染
+        navigate('home');
+    </script>
+</body>
+
+</html>
