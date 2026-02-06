@@ -4,13 +4,69 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>打答 - 四人记分</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.1.0/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.1.0/firebase-database-compat.js"></script>
+    <title>打答</title>
+    <link rel="preconnect" href="https://cdn.tailwindcss.com">
+    <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <style>
         html {
             overflow-y: scroll; /* 强制显示滚动条轨道，防止布局偏移 */
+        }
+        
+        /* 初始 Loading 样式 */
+        .startup-loading {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #f9fafb;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            transition: opacity 0.5s ease-out;
+            font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid #e5e7eb;
+            border-top: 4px solid #3b82f6;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 1rem;
+            /* 关键修复：强制 box-sizing 为 border-box，与 Tailwind 的全局重置保持一致 */
+            box-sizing: border-box;
+        }
+        .loading-text {
+            color: #6b7280;
+            font-weight: 700;
+            font-size: 0.875rem;
+            line-height: 1.25rem;
+            margin-bottom: 0.5rem;
+        }
+        .progress-container {
+            width: 12rem;
+            height: 0.5rem;
+            background-color: #e5e7eb;
+            border-radius: 9999px;
+            overflow: hidden;
+        }
+        .progress-bar {
+            height: 100%;
+            background-color: #3b82f6;
+            transition: width 0.3s ease-out;
+        }
+        .status-text {
+            font-size: 0.75rem;
+            line-height: 1rem;
+            color: #9ca3af;
+            margin-top: 0.5rem;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
 
         .zebra-stripe:nth-child(odd) {
@@ -39,6 +95,27 @@
         正在连接...
     </div>
 
+    <!-- 启动 Loading 屏 -->
+    <div id="startupLoading" class="startup-loading">
+        <div class="spinner"></div>
+        <div class="loading-text">打答启动中...</div>
+        <!-- 进度条容器 -->
+        <div id="startupBarContainer" class="progress-container">
+            <div id="startupProgress" class="progress-bar" style="width: 5%"></div>
+        </div>
+        <div id="startupText" class="status-text">正在准备环境...</div>
+    </div>
+    <script>
+        // 早期检测：非首次启动时，我们依然需要显示 Loading 屏以遮挡未渲染的内容（FOUC）
+        // 但我们可以隐藏进度条细节，仅展示转圈
+        if (localStorage.getItem('app_has_launched')) {
+            const bar = document.getElementById('startupBarContainer');
+            const txt = document.getElementById('startupText');
+            if (bar) bar.style.display = 'none';
+            if (txt) txt.style.display = 'none';
+        }
+    </script>
+
     <div id="app" class="max-w-md mx-auto p-4 pb-20">
         <div id="view-container"></div>
     </div>
@@ -53,6 +130,71 @@
             </div>
         </div>
     </div>
+
+    <!-- 动态加载脚本逻辑 -->
+    <script>
+        (function() {
+            const scripts = [
+                { src: "https://cdn.tailwindcss.com", name: "UI 框架" },
+                { src: "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2", name: "数据服务" }
+            ];
+            
+            let loadedCount = 0;
+            const totalScripts = scripts.length;
+            const progressBar = document.getElementById('startupProgress');
+            const progressContainer = document.getElementById('startupBarContainer');
+            const progressText = document.getElementById('startupText');
+
+            // 检查是否首次启动
+            const isFirstLaunch = !localStorage.getItem('app_has_launched');
+            if (isFirstLaunch) {
+                // 首次启动，记录标记
+                localStorage.setItem('app_has_launched', 'true');
+            }
+            // 非首次启动时，进度条已被上方内联脚本隐藏，但 startupLoading 容器依然存在
+            // 这确保了 Tailwind 加载完成前不会出现样式错乱（FOUC）
+
+            function updateProgress(percent, text) {
+                progressBar.style.width = percent + '%';
+                progressText.innerText = text;
+            }
+
+            function loadScript(index) {
+                if (index >= totalScripts) {
+                    updateProgress(95, "正在初始化应用...");
+                    // 所有外部脚本加载完毕，初始化应用
+                    // 稍微延迟一下以确保 Tailwind 处理完毕
+                    setTimeout(() => {
+                        if (window.App) {
+                            window.App.init();
+                            updateProgress(100, "准备就绪");
+                        } else {
+                            console.error("App object not found!");
+                        }
+                    }, 100);
+                    return;
+                }
+
+                const scriptInfo = scripts[index];
+                updateProgress(10 + ((index / totalScripts) * 80), `正在加载 ${scriptInfo.name}...`);
+
+                const script = document.createElement('script');
+                script.src = scriptInfo.src;
+                script.onload = () => {
+                    loadedCount++;
+                    loadScript(index + 1);
+                };
+                script.onerror = () => {
+                    progressText.innerText = `加载 ${scriptInfo.name} 失败，请刷新重试`;
+                    progressText.classList.add('text-red-500');
+                };
+                document.body.appendChild(script);
+            }
+
+            // 开始加载
+            loadScript(0);
+        })();
+    </script>
 
     <script>
         /**
@@ -70,23 +212,14 @@
 
         // --- 1. Config: 配置与常量 ---
         const CONFIG = {
-            FIREBASE: {
-                apiKey: "AIzaSyAE2JJQ2w_fLcwl0tlF9qcwRCNes9oICsY",
-                authDomain: "calculator-f4869.firebaseapp.com",
-                databaseURL: "https://calculator-f4869-default-rtdb.firebaseio.com",
-                projectId: "calculator-f4869",
-                storageBucket: "calculator-f4869.firebasestorage.app",
-                messagingSenderId: "657645216794",
-                appId: "1:657645216794:web:1e2092b1fce925b6b09da3",
-                measurementId: "G-TM8246NSRV"
+            SUPABASE: {
+                url: "https://wjefgfhcwqjliekdvfdj.supabase.co",
+                key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndqZWZnZmhjd3FqbGlla2R2ZmRqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAzNzM5MjksImV4cCI6MjA4NTk0OTkyOX0.djo9kSRZpo4yE_v084GpKnGzRh3LIXnSqw6UbSBfcvE"
             },
             GAME: {
                 PLAYER_COUNT: 4,
                 WIN_SCORE: 100,
                 UNIT_SCORE_DEFAULT: 0.3
-            },
-            STORAGE_KEYS: {
-                ROOM_CACHE_PREFIX: 'room_cache_'
             }
         };
 
@@ -256,93 +389,134 @@
 
         // --- 5. Service: 数据服务 ---
         const Service = {
-            db: null,
+            client: null,
+            channel: null,
 
             /**
-             * 初始化 Firebase
+             * 初始化 Supabase
              */
             init() {
-                if (!firebase.apps.length) {
-                    firebase.initializeApp(CONFIG.FIREBASE);
+                if (window.supabase) {
+                    this.client = window.supabase.createClient(CONFIG.SUPABASE.url, CONFIG.SUPABASE.key);
+                } else {
+                    console.error("Supabase SDK not loaded");
                 }
-                this.db = firebase.database();
-            },
-
-            /**
-             * 获取房间引用
-             */
-            roomRef(id) {
-                return this.db.ref('rooms/' + id);
             },
 
             /**
              * 检查房间是否存在
              */
             async checkRoomExists(id) {
-                const snapshot = await this.roomRef(id).once('value');
-                return snapshot.exists();
+                const { data, error } = await this.client
+                    .from('rooms')
+                    .select('id')
+                    .eq('id', id)
+                    .maybeSingle();
+                return !!data;
             },
 
             /**
              * 监听房间数据
              */
             subscribeRoom(id, callback) {
-                this.roomRef(id).on('value', (snap) => {
-                    const val = snap.val();
-                    // 更新本地缓存
-                    if (val) {
-                        localStorage.setItem(CONFIG.STORAGE_KEYS.ROOM_CACHE_PREFIX + id, JSON.stringify(val));
-                    }
-                    callback(val);
-                });
+                // 先获取一次最新数据
+                this.client
+                    .from('rooms')
+                    .select('content')
+                    .eq('id', id)
+                    .maybeSingle()
+                    .then(({ data, error }) => {
+                        if (data && data.content) {
+                            callback(data.content);
+                        } else {
+                            callback(null);
+                        }
+                    });
+
+                // 建立实时监听
+                if (this.channel) this.client.removeChannel(this.channel);
+                this.channel = this.client
+                    .channel('room_' + id)
+                    .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms', filter: 'id=eq.' + id }, (payload) => {
+                        // INSERT 或 UPDATE
+                        const newContent = payload.new ? payload.new.content : null;
+                        if (newContent) {
+                            callback(newContent);
+                        }
+                    })
+                    .subscribe();
             },
 
             /**
              * 取消监听
              */
             unsubscribeRoom(id) {
-                if (id) this.roomRef(id).off();
-            },
-
-            /**
-             * 从缓存读取房间数据
-             */
-            loadFromCache(id) {
-                try {
-                    const cached = localStorage.getItem(CONFIG.STORAGE_KEYS.ROOM_CACHE_PREFIX + id);
-                    return cached ? JSON.parse(cached) : null;
-                } catch (e) {
-                    console.error("Cache load error", e);
-                    return null;
+                if (this.channel) {
+                    this.client.removeChannel(this.channel);
+                    this.channel = null;
                 }
             },
 
             /**
              * 创建房间
              */
-            createRoom(id, players) {
-                return this.roomRef(id).update({
+            async createRoom(id, players) {
+                const initialData = {
                     players: players,
                     unitScore: CONFIG.GAME.UNIT_SCORE_DEFAULT,
                     currentSessionId: 1,
                     sessions: [{ id: 1, rounds: [] }],
                     createdAt: Date.now()
-                });
+                };
+                
+                const { error } = await this.client
+                    .from('rooms')
+                    .insert({ id: id, content: initialData });
+                
+                if (error) throw error;
+            },
+
+            /**
+             * 保存房间数据 (全量更新)
+             */
+            async saveRoom(id, roomData) {
+                // 确保更新时间戳等（如果需要）
+                // 这里直接更新 content 字段
+                const { error } = await this.client
+                    .from('rooms')
+                    .update({ content: roomData })
+                    .eq('id', id);
+                
+                if (error) console.error("Save room error", error);
             },
 
             /**
              * 删除房间
              */
-            deleteRoom(id) {
-                return this.roomRef(id).remove();
+            async deleteRoom(id) {
+                const { error } = await this.client
+                    .from('rooms')
+                    .delete()
+                    .eq('id', id);
+                if (error) throw error;
             },
 
             /**
              * 获取所有房间（用于菜单）
              */
             async getAllRooms() {
-                const snapshot = await this.db.ref('rooms').once('value');
-                return snapshot.val();
+                const { data, error } = await this.client
+                    .from('rooms')
+                    .select('id, content');
+                
+                if (error) return {};
+                
+                // 转换为 { id: content } 格式以保持兼容性
+                const result = {};
+                data.forEach(row => {
+                    result[row.id] = row.content;
+                });
+                return result;
             }
         };
 
@@ -665,6 +839,7 @@
                 document.getElementById('modalBody').innerHTML = `
                     <div class="${bodyClass}">${body}</div>
                     ${hasInput ? `<input type="text" id="modalInput" value="${inputDefault}" class="w-full border p-3 rounded outline-none focus:border-blue-500" autofocus>` : ''}
+                    <div id="modalError" class="text-red-500 font-bold mt-2 hidden text-center text-sm"></div>
                 `;
                 
                 const confirmBtn = document.getElementById('modalConfirmBtn');
@@ -679,6 +854,17 @@
                 document.getElementById('modal').classList.remove('hidden');
                 
                 this.modalCallback = onConfirm;
+            },
+
+            showModalError(msg) {
+                const el = document.getElementById('modalError');
+                if (el) {
+                    el.innerText = msg;
+                    el.classList.remove('hidden');
+                } else {
+                    // Fallback if modal structure is different (e.g. custom body)
+                    alert(msg);
+                }
             },
 
             showRoomListModal(rooms, isCleanMode) {
@@ -766,7 +952,7 @@
             showUnitScoreModal(currentVal, onConfirm) {
                 this.showModal("修改每分金额", "请输入每分多少钱：", () => {
                     const val = parseFloat(document.getElementById('modalInput').value);
-                    if (isNaN(val) || val <= 0) return alert("请输入正数");
+                    if (isNaN(val) || val <= 0) return this.showModalError("请输入正数");
                     onConfirm(val);
                 }, true, currentVal);
             },
@@ -774,17 +960,20 @@
             showScoreModal(isEdit, defaultVal, onConfirm) {
                  this.showModal(isEdit ? "修改分数" : "添加记分", "请输入4个分数（空格或逗号分隔）：", () => {
                     const scores = Utils.parseInput(document.getElementById('modalInput').value).map(Number);
-                    if (scores.length !== 4 || scores.some(isNaN)) return alert("请输入4个有效数字");
+                    if (scores.length !== 4 || scores.some(isNaN)) return this.showModalError("请输入4个有效数字");
                     onConfirm(scores);
                 }, true, defaultVal);
             },
 
             showSingleScoreInputModal(title, defaultVal, onConfirm) {
-                 this.showModal(title, (defaultVal === "" || defaultVal === undefined) ? "请输入分数：" : "请输入新的分数：", () => {
+                 const safeDefaultVal = (defaultVal === null || defaultVal === undefined) ? "" : defaultVal;
+                 const promptText = (safeDefaultVal === "") ? "请输入分数：" : "请输入新的分数：";
+                 
+                 this.showModal(title, promptText, () => {
                     const val = parseFloat(document.getElementById('modalInput').value);
-                    if (isNaN(val)) return alert("请输入有效数字");
+                    if (isNaN(val)) return this.showModalError("请输入有效数字");
                     onConfirm(val);
-                }, true, defaultVal);
+                }, true, safeDefaultVal);
             },
 
             showGameOverModal(onModify, onNext) {
@@ -913,6 +1102,16 @@
              * 初始化应用
              */
             init() {
+                // 移除启动 Loading
+                // 注意：这里不再立即移除，而是由外部脚本加载完成后调用 init，然后稍微延迟移除，以展示 100% 状态
+                const loader = document.getElementById('startupLoading');
+                if (loader) {
+                    setTimeout(() => {
+                        loader.style.opacity = '0';
+                        setTimeout(() => loader.remove(), 500);
+                    }, 500);
+                }
+
                 Service.init();
                 View.init();
                 this.navigate('home');
@@ -938,7 +1137,7 @@
              * 处理加入房间逻辑
              */
             async handleJoinRoom(id, isCreate = false) {
-                if (!/^\d+$/.test(id)) return alert("房间号必须是数字");
+                if (!/^\d+$/.test(id)) return View.showMessageModal("提示", "房间号必须是数字", null);
                 View.showLoading(true);
 
                 const exists = await Service.checkRoomExists(id);
@@ -964,19 +1163,7 @@
                 this.closeModal();
                 State.roomId = id;
 
-                // 1. 尝试缓存加载
-                const cachedData = Service.loadFromCache(id);
-                if (cachedData && cachedData.players) {
-                    State.roomData = cachedData;
-                    View.showLoading(false);
-                    this.initExpandedSessions();
-                    if (State.view !== 'calculate') {
-                        State.view = 'room';
-                        View.render();
-                    }
-                }
-
-                // 2. 建立实时连接
+                // 建立实时连接
                 Service.subscribeRoom(id, (val) => {
                     State.roomData = val;
                     View.showLoading(false);
@@ -1011,10 +1198,17 @@
             /**
              * 提交新房间设置
              */
-            submitSetup(namesStr) {
+            async submitSetup(namesStr) {
                 const names = Utils.parseInput(namesStr);
-                if (names.length !== 4) return alert("请输入正好4个靓仔的名字");
-                Service.createRoom(State.roomId, names);
+                if (names.length !== 4) return View.showMessageModal("提示", "请输入正好4个靓仔的名字", null);
+                
+                View.showLoading(true);
+                try {
+                    await Service.createRoom(State.roomId, names);
+                } catch (e) {
+                    View.showLoading(false);
+                    View.showMessageModal("错误", "创建房间失败：" + e.message, null);
+                }
             },
 
             /**
@@ -1025,10 +1219,11 @@
                     const sessions = State.roomData.sessions || [];
                     const newId = sessions.length + 1;
                     sessions.push({ id: newId, rounds: [] });
-                    Service.roomRef(State.roomId).update({
-                        sessions: sessions,
-                        currentSessionId: newId
-                    });
+                    
+                    State.roomData.sessions = sessions;
+                    State.roomData.currentSessionId = newId;
+                    Service.saveRoom(State.roomId, State.roomData);
+                    
                     this.closeModal();
                 };
 
@@ -1050,7 +1245,8 @@
              */
             openUnitScoreModal() {
                 View.showUnitScoreModal(State.roomData.unitScore, (val) => {
-                    Service.roomRef(State.roomId).update({ unitScore: parseFloat(val.toFixed(1)) });
+                    State.roomData.unitScore = parseFloat(val.toFixed(1));
+                    Service.saveRoom(State.roomId, State.roomData);
                     this.closeModal();
                 });
             },
@@ -1085,8 +1281,8 @@
                         });
                     }
 
-                    Service.roomRef(State.roomId).child(`sessions/${sessionIdx}/rounds`).set(currentRounds);
-                    Service.roomRef(State.roomId).child('lastScoreTime').set(Date.now());
+                    State.roomData.lastScoreTime = Date.now();
+                    Service.saveRoom(State.roomId, State.roomData);
                     this.closeModal();
                     setTimeout(() => this.checkGameOver(sessionIdx), 500);
                 });
@@ -1130,8 +1326,8 @@
                         });
                     }
 
-                    Service.roomRef(State.roomId).child(`sessions/${sessionIdx}/rounds`).set(currentRounds);
-                    Service.roomRef(State.roomId).child('lastScoreTime').set(Date.now());
+                    State.roomData.lastScoreTime = Date.now();
+                    Service.saveRoom(State.roomId, State.roomData);
                     this.closeModal();
                     setTimeout(() => this.checkGameOver(sessionIdx), 500);
                 });
@@ -1161,8 +1357,8 @@
                     currentRounds[roundIdx].scores[playerIdx] = val;
                     currentRounds[roundIdx].timestamp = Date.now();
 
-                    Service.roomRef(State.roomId).child(`sessions/${sessionIdx}/rounds`).set(currentRounds);
-                    Service.roomRef(State.roomId).child('lastScoreTime').set(Date.now());
+                    State.roomData.lastScoreTime = Date.now();
+                    Service.saveRoom(State.roomId, State.roomData);
                     this.closeModal();
                     setTimeout(() => this.checkGameOver(sessionIdx), 500);
                 });
@@ -1249,9 +1445,8 @@
         // 只有 onclick 里的字符串需要全局访问。
         
         // 启动应用
-        App.init();
-
+        // 移除立即调用，改为由脚本加载逻辑调用
+    // App.init();
     </script>
 </body>
-
 </html>
