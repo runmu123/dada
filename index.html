@@ -9,24 +9,27 @@
     <script src="https://www.gstatic.com/firebasejs/9.1.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.1.0/firebase-database-compat.js"></script>
     <style>
+        /* ============================================================
+         * 全局样式定义
+         * - overflow-y: scroll 强制显示滚动条，防止内容变化导致的布局抖动
+         * - zebra-stripe 斑马纹样式，用于表格奇偶行交替背景色
+         * - modal-overlay 模态框遮罩层半透明背景
+         * - active-session 当前激活场次的左侧蓝色边框标识
+         * ============================================================ */
         html {
-            overflow-y: scroll; /* 强制显示滚动条轨道，防止布局偏移 */
+            overflow-y: scroll;
         }
-
         .zebra-stripe:nth-child(odd) {
             background-color: #f9fafb;
         }
-
         .modal-overlay {
             background-color: rgba(0, 0, 0, 0.5);
         }
-
         input::-webkit-outer-spin-button,
         input::-webkit-inner-spin-button {
             -webkit-appearance: none;
             margin: 0;
         }
-
         .active-session {
             border-left: 4px solid #3b82f6;
         }
@@ -34,20 +37,22 @@
 </head>
 
 <body class="bg-gray-50 text-gray-900 min-h-screen">
-
+    <!-- 顶部加载状态条：在连接Firebase时显示 -->
     <div id="loadingStatus" class="fixed top-0 left-0 w-full bg-blue-500 text-white text-xs py-1 text-center hidden">
         正在连接...
     </div>
 
+    <!-- 主应用容器：限制最大宽度，居中显示 -->
     <div id="app" class="max-w-md mx-auto p-4 pb-20">
         <div id="view-container"></div>
     </div>
 
+    <!-- 通用模态框：所有弹窗复用此DOM结构 -->
     <div id="modal" class="fixed inset-0 modal-overlay flex items-center justify-center p-4 z-50 hidden">
         <div class="bg-white rounded-lg w-full max-w-sm p-6 shadow-xl">
             <h3 id="modalTitle" class="text-lg font-bold mb-4">提示</h3>
             <div id="modalBody" class="mb-6"></div>
-            <div class="flex justify-end space-x-3">
+            <div id="modalFooter" class="flex justify-end space-x-3">
                 <button id="modalCancelBtn" onclick="App.closeModal()" class="px-4 py-2 text-gray-500">取消</button>
                 <button id="modalConfirmBtn" class="px-4 py-2 bg-blue-500 text-white rounded">确认</button>
             </div>
@@ -56,20 +61,31 @@
 
     <script>
         /**
-         * ==================================================================================
-         * 模块化架构设计
-         * 1. Config: 应用配置与常量
-         * 2. Utils: 通用工具函数
-         * 3. State: 应用状态管理
-         * 4. Logic: 纯业务逻辑 (计算、规则校验)
-         * 5. Service: 数据服务 (Firebase, LocalStorage)
-         * 6. View: 视图渲染组件
-         * 7. Controller: 交互逻辑与流程控制
-         * ==================================================================================
+         * ============================================================================
+         * 打答 - 四人记分应用
+         * ============================================================================
+         * 
+         * 架构设计（模块化单文件结构）：
+         * 
+         * 1. CONFIG   - 静态配置：Firebase连接参数、游戏规则常量
+         * 2. Utils    - 纯工具函数：无状态的字符串处理、时间格式化
+         * 3. State    - 应用状态：管理当前视图、房间数据、UI状态
+         * 4. Logic    - 业务逻辑：分数计算、游戏规则判断（纯函数，无副作用）
+         * 5. Service  - 数据服务：Firebase CRUD操作、本地缓存管理
+         * 6. View     - 视图渲染：HTML模板生成、DOM操作、模态框管理
+         * 7. App      - 应用控制器：协调各模块、处理用户交互
+         * 
+         * 数据流向：用户操作 → App处理 → Service更新数据 → Firebase同步 → State更新 → View重渲染
+         * 
+         * ============================================================================
          */
 
-        // --- 1. Config: 配置与常量 ---
+        // ============================================================
+        // CONFIG: 应用配置与常量
+        // 集中管理所有配置项，便于维护和修改
+        // ============================================================
         const CONFIG = {
+            // Firebase 实时数据库配置
             FIREBASE: {
                 apiKey: "AIzaSyAE2JJQ2w_fLcwl0tlF9qcwRCNes9oICsY",
                 authDomain: "calculator-f4869.firebaseapp.com",
@@ -80,67 +96,72 @@
                 appId: "1:657645216794:web:1e2092b1fce925b6b09da3",
                 measurementId: "G-TM8246NSRV"
             },
+            // 游戏规则配置
             GAME: {
-                PLAYER_COUNT: 4,
-                WIN_SCORE: 100,
-                UNIT_SCORE_DEFAULT: 0.3
+                PLAYER_COUNT: 4,           // 玩家人数
+                WIN_SCORE: 100,            // 获胜所需分数
+                UNIT_SCORE_DEFAULT: 0.3    // 默认每分金额
             },
+            // 本地存储键名前缀
             STORAGE_KEYS: {
                 ROOM_CACHE_PREFIX: 'room_cache_'
             }
         };
 
-        // --- 2. Utils: 工具函数 ---
+        // ============================================================
+        // Utils: 通用工具函数
+        // 无状态的纯函数，不依赖应用状态
+        // ============================================================
         const Utils = {
             /**
-             * 解析输入字符串为数组
-             * @param {string} str - 输入字符串
-             * @returns {Array<string>} - 分割后的字符串数组
+             * 解析用户输入字符串为分隔数组
+             * 支持空格、中文逗号、英文逗号作为分隔符
+             * @param {string} str - 用户输入的原始字符串
+             * @returns {string[]} - 过滤空白后的字符串数组
              */
             parseInput(str) {
                 return str.split(/[\s,，]+/).filter(t => t.trim() !== "");
             },
 
             /**
-             * 格式化时间戳为 HH:mm
-             * @param {number} timestamp - 时间戳
-             * @returns {string} - 格式化后的时间字符串
+             * 将时间戳格式化为 HH:mm 格式
+             * 用于显示每局记分的时间
+             * @param {number} timestamp - 毫秒级时间戳
+             * @returns {string} - HH:mm 格式的时间字符串，无效输入返回空串
              */
             formatTime(timestamp) {
                 if (!timestamp) return "";
                 const date = new Date(timestamp);
-                const hours = date.getHours().toString().padStart(2, '0');
-                const minutes = date.getMinutes().toString().padStart(2, '0');
-                return `${hours}:${minutes}`;
+                return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
             },
 
             /**
-             * 格式化持续时间
+             * 计算并格式化游戏持续时间
+             * 用于在结算页面显示活动总时长
              * @param {number} start - 开始时间戳
              * @param {number} end - 结束时间戳
-             * @returns {string} - 格式化后的持续时间
+             * @returns {string} - "X小时Y分钟" 格式，无效输入返回"未知"
              */
             formatDuration(start, end) {
                 if (!start || !end) return "未知";
                 const diff = end - start;
                 if (diff < 0) return "未知";
-                const hours = Math.floor(diff / (1000 * 60 * 60));
-                const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-                return `${hours}小时${minutes}分钟`;
+                return `${Math.floor(diff / 3600000)}小时${Math.floor((diff % 3600000) / 60000)}分钟`;
             }
         };
 
-        // --- 3. State: 状态管理 ---
+        // ============================================================
+        // State: 应用状态管理
+        // 集中管理所有运行时状态，确保数据一致性
+        // ============================================================
         const State = {
-            view: 'home', // home, create, join, setup, room, calculate
-            roomId: null,
-            roomData: null,
-            expandedSessions: new Set(), // 仅本地存储，记录展开的场次
-            showMenu: false, // 菜单显示状态
+            view: 'home',                    // 当前视图: home|create|join|setup|room|calculate
+            roomId: null,                    // 当前房间ID
+            roomData: null,                  // 房间完整数据（从Firebase同步）
+            expandedSessions: new Set(),     // 已展开的场次ID集合（用于折叠/展开功能）
+            showMenu: false,                 // 首页菜单是否显示
 
-            /**
-             * 重置状态
-             */
+            /** 重置所有状态（退出房间时调用） */
             reset() {
                 this.roomId = null;
                 this.roomData = null;
@@ -149,164 +170,141 @@
             }
         };
 
-        // --- 4. Logic: 业务逻辑 ---
+        // ============================================================
+        // Logic: 业务逻辑层
+        // 纯函数，无副作用，不依赖外部状态
+        // 所有分数计算和规则判断都在这里
+        // ============================================================
         const Logic = {
+            /** 玩家索引数组，避免代码中重复 [0,1,2,3] */
+            PLAYER_INDICES: [0, 1, 2, 3],
+
             /**
-             * 计算某场次某玩家的总分
-             * @param {Object} session - 场次对象
-             * @param {number} playerIdx - 玩家索引
-             * @returns {number} - 总分
+             * 计算单个场次中某玩家的总得分
+             * @param {Object} session - 场次数据对象
+             * @param {number} playerIdx - 玩家索引(0-3)
+             * @returns {number} - 该场次该玩家的总分数
              */
             calculateSessionTotal(session, playerIdx) {
-                if (!session || !session.rounds) return 0;
-                return session.rounds.reduce((sum, r) => {
-                    const score = (r.scores && r.scores[playerIdx]) || 0;
-                    return sum + score;
-                }, 0);
+                if (!session?.rounds) return 0;
+                return session.rounds.reduce((sum, r) => sum + ((r.scores?.[playerIdx]) || 0), 0);
             },
 
             /**
-             * 计算所有场次某玩家的总分
-             * @param {Object} roomData - 房间数据
-             * @param {number} playerIdx - 玩家索引
-             * @returns {number} - 总分
+             * 计算所有场次中某玩家的总得分
+             * @param {Object} roomData - 完整房间数据
+             * @param {number} playerIdx - 玩家索引(0-3)
+             * @returns {number} - 所有场次的累计总分数
              */
             calculateTotal(roomData, playerIdx) {
-                if (!roomData || !roomData.sessions) return 0;
+                if (!roomData?.sessions) return 0;
                 return roomData.sessions.reduce((sum, s) => sum + this.calculateSessionTotal(s, playerIdx), 0);
             },
 
             /**
-             * 检查本场是否结束（分数 >= 100）
-             * @param {Object} session - 场次对象
-             * @returns {boolean} - 是否结束
+             * 检查某场次是否已结束（任一玩家分数达到100分）
+             * 只有当最后一局完成（4人分数都已填写）时才判断
+             * @param {Object} session - 场次数据
+             * @returns {boolean} - 是否已结束
              */
             isGameOver(session) {
-                if (!session || !session.rounds) return false;
-
-                // 检查最后一局是否完成，如果未完成（有空分），则不判断结束
+                if (!session?.rounds?.length) return false;
                 const lastRound = session.rounds[session.rounds.length - 1];
-                if (lastRound && (
-                    !lastRound.scores || 
-                    [0, 1, 2, 3].some(i => lastRound.scores[i] === null || lastRound.scores[i] === undefined)
-                )) {
-                    return false;
-                }
-
-                const totals = [0, 0, 0, 0];
-                session.rounds.forEach(r => {
-                    const scores = r.scores || [];
-                    [0, 1, 2, 3].forEach(i => totals[i] += (scores[i] || 0));
-                });
-
+                // 最后一局未完成时不判断结束
+                if (this.isRoundPartial(lastRound)) return false;
+                // 计算各玩家总分，检查是否有人达到获胜分数
+                const totals = this.PLAYER_INDICES.map(i => this.calculateSessionTotal(session, i));
                 return totals.some(t => t >= CONFIG.GAME.WIN_SCORE);
             },
 
             /**
-             * 检查该局是否为未完成状态 (Partial)
-             * @param {Object} round - 局对象
-             * @returns {boolean}
+             * 检查某局是否为未完成状态（有人分数未填写）
+             * Firebase可能将null存储为undefined或稀疏数组
+             * @param {Object} round - 局数据
+             * @returns {boolean} - 是否为部分完成状态
              */
             isRoundPartial(round) {
-                if (!round) return false;
-                // Firebase 可能会把 null 存为 undefined 或 稀疏数组
-                return !round.scores || [0, 1, 2, 3].some(i => round.scores[i] === null || round.scores[i] === undefined);
+                if (!round?.scores) return true;
+                return this.PLAYER_INDICES.some(i => round.scores[i] === null || round.scores[i] === undefined);
             },
 
             /**
-             * 计算输赢结果
-             * @param {Object} roomData 
-             * @returns {Array} 结果数组
+             * 计算最终输赢金额
+             * 公式: (4人总分 - 个人总分 × 4) × 每分金额
+             * 原理: 个人总分与平均分的差异，乘以每分金额
+             * @param {Object} roomData - 完整房间数据
+             * @returns {Array<{name:string, val:number}>} - 各玩家输赢金额数组
              */
             calculateResults(roomData) {
                 const totalGroupScore = roomData.players.reduce((sum, _, i) => sum + this.calculateTotal(roomData, i), 0);
                 return roomData.players.map((name, i) => {
                     const personalTotal = this.calculateTotal(roomData, i);
-                    // 公式: (4人总分 - 个人总分 * 4) * 每分金额
-                    let winLoss = (totalGroupScore - (personalTotal * 4)) * roomData.unitScore;
+                    const winLoss = (totalGroupScore - personalTotal * 4) * roomData.unitScore;
                     return { name, val: Number(winLoss.toFixed(1)) };
                 });
             },
 
             /**
-             * 计算场次的历史累计数据 (用于明细行)
-             * @param {Object} session 
-             * @returns {Array}
+             * 计算场次中每局的累计分历史（用于明细显示）
+             * 返回每局记录：局索引、本局分数、局前累计分、时间戳
+             * @param {Object} session - 场次数据
+             * @returns {Array} - 历史记录数组
              */
             calculateRoundHistory(session) {
                 const rounds = session.rounds || [];
-                const history = [];
-                const currentTotals = [0, 0, 0, 0];
-
-                rounds.forEach((r, rIdx) => {
-                    const rawScores = r.scores || [];
-                    const scores = [0, 1, 2, 3].map(i => rawScores[i]);
-                    const before = [...currentTotals];
-                    scores.forEach((s, i) => currentTotals[i] += (s || 0));
-                    history.push({
-                        roundIndex: rIdx,
-                        scores: scores,
-                        totalsBefore: before,
-                        timestamp: r.timestamp
-                    });
+                const totals = [0, 0, 0, 0]; // 累计分
+                return rounds.map((r, rIdx) => {
+                    const scores = this.PLAYER_INDICES.map(i => r.scores?.[i]);
+                    const before = [...totals];
+                    scores.forEach((s, i) => totals[i] += (s || 0));
+                    return { roundIndex: rIdx, scores, totalsBefore: before, timestamp: r.timestamp };
                 });
-                return history;
             }
         };
 
-        // --- 5. Service: 数据服务 ---
+        // ============================================================
+        // Service: 数据服务层
+        // 封装所有Firebase操作和本地缓存逻辑
+        // ============================================================
         const Service = {
             db: null,
 
-            /**
-             * 初始化 Firebase
-             */
+            /** 初始化Firebase连接 */
             init() {
-                if (!firebase.apps.length) {
-                    firebase.initializeApp(CONFIG.FIREBASE);
-                }
+                if (!firebase.apps.length) firebase.initializeApp(CONFIG.FIREBASE);
                 this.db = firebase.database();
             },
 
-            /**
-             * 获取房间引用
-             */
+            /** 获取房间数据引用路径 */
             roomRef(id) {
                 return this.db.ref('rooms/' + id);
             },
 
-            /**
-             * 检查房间是否存在
-             */
+            /** 检查房间是否存在 */
             async checkRoomExists(id) {
-                const snapshot = await this.roomRef(id).once('value');
-                return snapshot.exists();
+                return (await this.roomRef(id).once('value')).exists();
             },
 
             /**
-             * 监听房间数据
+             * 订阅房间数据变化
+             * 同时更新本地缓存以支持离线快速加载
+             * @param {string} id - 房间ID
+             * @param {Function} callback - 数据变化回调
              */
             subscribeRoom(id, callback) {
                 this.roomRef(id).on('value', (snap) => {
                     const val = snap.val();
-                    // 更新本地缓存
-                    if (val) {
-                        localStorage.setItem(CONFIG.STORAGE_KEYS.ROOM_CACHE_PREFIX + id, JSON.stringify(val));
-                    }
+                    if (val) localStorage.setItem(CONFIG.STORAGE_KEYS.ROOM_CACHE_PREFIX + id, JSON.stringify(val));
                     callback(val);
                 });
             },
 
-            /**
-             * 取消监听
-             */
+            /** 取消房间数据订阅 */
             unsubscribeRoom(id) {
                 if (id) this.roomRef(id).off();
             },
 
-            /**
-             * 从缓存读取房间数据
-             */
+            /** 从本地缓存读取房间数据 */
             loadFromCache(id) {
                 try {
                     const cached = localStorage.getItem(CONFIG.STORAGE_KEYS.ROOM_CACHE_PREFIX + id);
@@ -317,12 +315,10 @@
                 }
             },
 
-            /**
-             * 创建房间
-             */
+            /** 创建新房间 */
             createRoom(id, players) {
                 return this.roomRef(id).update({
-                    players: players,
+                    players,
                     unitScore: CONFIG.GAME.UNIT_SCORE_DEFAULT,
                     currentSessionId: 1,
                     sessions: [{ id: 1, rounds: [] }],
@@ -330,55 +326,52 @@
                 });
             },
 
-            /**
-             * 删除房间
-             */
+            /** 删除房间 */
             deleteRoom(id) {
                 return this.roomRef(id).remove();
             },
 
-            /**
-             * 获取所有房间（用于菜单）
-             */
+            /** 获取所有房间列表 */
             async getAllRooms() {
-                const snapshot = await this.db.ref('rooms').once('value');
-                return snapshot.val();
+                return (await this.db.ref('rooms').once('value')).val();
             }
         };
 
-        // --- 6. View: 视图渲染 ---
+        // ============================================================
+        // View: 视图渲染层
+        // 负责HTML模板生成、DOM操作和模态框管理
+        // ============================================================
         const View = {
             container: document.getElementById('view-container'),
             loading: document.getElementById('loadingStatus'),
-            modalCallback: null,
+            modalCallback: null,  // 模态框确认回调
 
+            /** 初始化视图：绑定模态框确认按钮事件 */
             init() {
-                const btn = document.getElementById('modalConfirmBtn');
-                if (btn) {
-                    btn.onclick = () => {
-                        if (this.modalCallback) this.modalCallback();
-                    };
-                }
+                document.getElementById('modalConfirmBtn').onclick = () => this.modalCallback?.();
             },
 
-            /**
-             * 显示/隐藏加载条
-             */
+            /** 切换加载状态条显示 */
             showLoading(show) {
                 this.loading.classList.toggle('hidden', !show);
             },
 
-            /**
-             * 主渲染入口
-             */
+            /** 主渲染入口：根据当前状态选择对应渲染方法 */
             render() {
-                if (State.view === 'home') this.renderHome();
-                else if (State.view === 'create' || State.view === 'join') this.renderEntry();
-                else if (State.view === 'setup') this.renderSetup();
-                else if (State.view === 'room') this.renderRoom();
-                else if (State.view === 'calculate') this.renderCalculate();
+                const renderMap = {
+                    home: this.renderHome,
+                    create: this.renderEntry,
+                    join: this.renderEntry,
+                    setup: this.renderSetup,
+                    room: this.renderRoom,
+                    calculate: this.renderCalculate
+                };
+                renderMap[State.view]?.call(this);
             },
 
+            // ==================== 页面渲染方法 ====================
+
+            /** 渲染首页 */
             renderHome() {
                 this.container.innerHTML = `
                     <div class="flex flex-col min-h-[80vh]">
@@ -401,29 +394,28 @@
                                 </button>
                             </div>
                         </div>
-                    </div>
-                `;
+                    </div>`;
             },
 
+            /** 渲染右上角菜单 */
             renderMenu() {
+                const menuItems = [
+                    { icon: '🏠', text: '查看现有房间', action: 'App.menuViewRooms()', hover: 'blue' },
+                    { icon: '🗑️', text: '清理房间', action: 'App.menuCleanRoom()', hover: 'red' },
+                    { icon: '📖', text: '使用方法', action: 'App.menuUsage()', hover: 'green' },
+                    { icon: 'ℹ️', text: '关于', action: 'App.menuAbout()', hover: 'purple' }
+                ];
                 return `
-                    <div class="absolute right-0 top-12 w-48 bg-white border border-gray-200 rounded-lg shadow-2xl z-50 text-base overflow-hidden animate-fade-in-down">
-                        <button onclick="App.menuViewRooms()" class="block w-full text-left px-4 py-3 hover:bg-blue-50 text-gray-700 hover:text-blue-600 border-b border-gray-100 transition-colors flex items-center">
-                            <span class="mr-2">🏠</span> 查看现有房间
-                        </button>
-                        <button onclick="App.menuCleanRoom()" class="block w-full text-left px-4 py-3 hover:bg-red-50 text-gray-700 hover:text-red-600 border-b border-gray-100 transition-colors flex items-center">
-                            <span class="mr-2">🗑️</span> 清理房间
-                        </button>
-                        <button onclick="App.menuUsage()" class="block w-full text-left px-4 py-3 hover:bg-green-50 text-gray-700 hover:text-green-600 border-b border-gray-100 transition-colors flex items-center">
-                            <span class="mr-2">📖</span> 使用方法
-                        </button>
-                        <button onclick="App.menuAbout()" class="block w-full text-left px-4 py-3 hover:bg-purple-50 text-gray-700 hover:text-purple-600 transition-colors flex items-center">
-                            <span class="mr-2">ℹ️</span> 关于
-                        </button>
-                    </div>
-                `;
+                    <div class="absolute right-0 top-12 w-48 bg-white border border-gray-200 rounded-lg shadow-2xl z-50 text-base overflow-hidden">
+                        ${menuItems.map((item, idx) => `
+                            <button onclick="${item.action}" class="block w-full text-left px-4 py-3 hover:bg-${item.hover}-50 text-gray-700 hover:text-${item.hover}-600 ${idx < 3 ? 'border-b border-gray-100' : ''} transition-colors flex items-center">
+                                <span class="mr-2">${item.icon}</span> ${item.text}
+                            </button>
+                        `).join('')}
+                    </div>`;
             },
 
+            /** 渲染创建/加入房间页面 */
             renderEntry() {
                 const isCreate = State.view === 'create';
                 this.container.innerHTML = `
@@ -432,10 +424,10 @@
                         <input type="number" id="roomNumInput" placeholder="输入房间号(数字)" class="w-full border-2 border-gray-200 rounded-lg p-4 mb-4 text-center text-xl focus:border-blue-500 outline-none">
                         <button onclick="App.handleJoinRoom(document.getElementById('roomNumInput').value, ${isCreate})" class="w-full bg-blue-500 text-white py-4 rounded-lg font-bold">确认</button>
                         <button onclick="App.navigate('home')" class="w-full text-gray-500 mt-4 text-center">返回</button>
-                    </div>
-                `;
+                    </div>`;
             },
 
+            /** 渲染新房间设置页面 */
             renderSetup() {
                 this.container.innerHTML = `
                     <div class="flex flex-col justify-center min-h-[80vh]">
@@ -443,44 +435,39 @@
                         <p class="text-gray-600 mb-2 text-sm">请输入4个靓仔名字（空格或逗号分隔）</p>
                         <input type="text" id="playerNames" placeholder="小王 小李 阿强 大壮" class="w-full border-2 border-gray-200 rounded-lg p-4 mb-4 outline-none focus:border-blue-500">
                         <button onclick="App.submitSetup(document.getElementById('playerNames').value)" class="w-full bg-blue-500 text-white py-4 rounded-lg font-bold">进入房间</button>
-                    </div>
-                `;
+                    </div>`;
             },
 
+            /** 渲染房间主页面（核心页面） */
             renderRoom() {
                 const d = State.roomData;
                 const players = d.players;
-                const sessions = [...d.sessions].reverse(); // 最新场次在上
+                const sessions = [...d.sessions].reverse(); // 最新场次显示在上方
 
-                let html = `
+                this.container.innerHTML = `
                     <div class="relative flex justify-center items-center mb-6">
                         <h1 class="text-3xl font-black text-blue-600">打答</h1>
-                        <button onclick="App.exitRoom()" class="absolute right-0 text-red-500 font-medium text-base border border-red-200 px-3 py-1 rounded">退出房间</button>
+                        <button onclick="App.exitRoom()" class="absolute right-0 text-red-500 font-medium text-lg border border-red-200 px-3 py-1 rounded">退出房间</button>
                     </div>
-
-                    <div id="pullToRefreshIndicator" class="hidden text-center text-gray-500 text-sm py-2">
-                        下拉刷新...
-                    </div>
-
+                    <div id="pullToRefreshIndicator" class="hidden text-center text-gray-500 text-sm py-2">下拉刷新...</div>
                     <div class="bg-white p-4 rounded-xl shadow-sm mb-4 border border-gray-100">
                         <div class="flex items-center justify-between">
                             <div class="flex items-center space-x-2">
                                 <span class="text-sm font-bold">每分金额:</span>
                                 <span class="font-bold text-lg mx-2">${d.unitScore}</span>
-                                <button onclick="App.openUnitScoreModal()" class="text-blue-500 text-base font-bold">修改</button>
+                                <button onclick="App.openUnitScoreModal()" class="text-blue-500 text-lg font-bold">修改</button>
                             </div>
-                            <button onclick="App.refreshRoom()" class="bg-green-500 text-white text-sm px-3 py-1 rounded shadow">刷新数据</button>
+                            <button onclick="App.refreshRoom()" class="bg-green-500 text-white text-base px-3 py-1 rounded shadow">刷新数据</button>
                         </div>
                     </div>
-
                     <div class="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100 text-center text-sm">
                         <table class="w-full border-collapse table-fixed">
                             <thead>
                                 <tr class="bg-gray-800 text-white">
                                     <th class="w-1/6 py-3 px-1 font-medium text-base text-center">场次</th>
-                                    ${players.map(p => `<th class="w-1/6 py-3 px-1 font-medium text-base text-center">${p}</th>`).join('')}
+                                    ${players.map((p, i) => `<th class="w-1/6 py-3 px-1 font-medium text-lg text-center cursor-pointer hover:text-blue-300" onclick="App.headerPlayerClick(${i})">${p}</th>`).join('')}
                                     <th class="w-1/6 py-3 px-1">
-                                        <button onclick="App.startNewSession()" class="text-green-600 font-bold text-base cursor-pointer hover:text-green-800">加场</button>
+                                        <button onclick="App.startNewSession()" class="text-green-600 font-bold text-lg cursor-pointer hover:text-green-800">加场</button>
                                     </th>
                                 </tr>
                             </thead>
@@ -488,105 +475,82 @@
                                 <tr class="bg-blue-50 font-bold border-b-2 border-blue-100 text-base">
                                     <td class="py-4 text-center">全部</td>
                                     ${players.map((_, i) => `<td class="text-center">${Logic.calculateTotal(d, i)}</td>`).join('')}
-                                    <td class="text-blue-600 cursor-pointer font-bold" onclick="App.navigate('calculate')">计算</td>
+                                    <td class="text-blue-600 cursor-pointer font-bold text-lg" onclick="App.navigate('calculate')">计算</td>
                                 </tr>
-                                ${sessions.map(s => this.renderSessionRow(s, d.players, d.currentSessionId)).join('')}
+                                ${sessions.map(s => this.renderSessionRow(s, players, d.currentSessionId)).join('')}
                             </tbody>
                         </table>
                     </div>`;
-
-                this.container.innerHTML = html;
                 this.setupPullToRefresh();
             },
 
-            /**
-             * 渲染场次行
-             */
+            /** 渲染单个场次行（包含汇总行和展开后的明细行） */
             renderSessionRow(session, players, currentId) {
                 const isCurrent = session.id === currentId;
                 const isExpanded = State.expandedSessions.has(session.id);
+                const sessionIdx = State.roomData.sessions.findIndex(s => s.id === session.id);
                 
-                let html = this.renderSessionSummary(session, players, isCurrent, isExpanded);
-
-                if (isExpanded) {
-                    if (isCurrent) {
-                        html += this.renderCurrentRoundRow(session, players);
-                    }
-                    html += this.renderHistoryRows(session, players, isCurrent);
-                }
-                return html;
-            },
-
-            renderSessionSummary(session, players, isCurrent, isExpanded) {
-                const rowClass = isCurrent 
-                    ? 'bg-yellow-50 active-session border-b border-yellow-100' 
-                    : 'zebra-stripe';
-                
-                return `
+                // 汇总行
+                const rowClass = isCurrent ? 'bg-yellow-50 active-session border-b border-yellow-100' : 'zebra-stripe';
+                let html = `
                     <tr class="${rowClass} text-base">
                         <td class="py-4 font-bold text-center">${session.id}</td>
                         ${players.map((_, i) => `<td class="text-center">${Logic.calculateSessionTotal(session, i)}</td>`).join('')}
                         <td class="text-blue-500 font-medium">
-                            <button onclick="App.toggleSession(${session.id})" class="font-bold text-sm">${isExpanded ? '收起' : '展开'}</button>
+                            <button onclick="App.toggleSession(${session.id})" class="font-bold text-base">${isExpanded ? '收起' : '展开'}</button>
                         </td>
-                    </tr>
-                `;
+                    </tr>`;
+
+                // 展开后的明细行
+                if (isExpanded) {
+                    // 当前场次显示"本局"行（用于快速记分）
+                    if (isCurrent) {
+                        html += this.renderCurrentRoundRow(session, players, sessionIdx);
+                    }
+                    // 历史局明细
+                    html += this.renderHistoryRows(session, players, isCurrent, sessionIdx);
+                }
+                return html;
             },
 
-            renderCurrentRoundRow(session, players) {
+            /** 渲染"本局"行（当前场次的快速记分入口） */
+            renderCurrentRoundRow(session, players, sessionIdx) {
                 const rounds = session.rounds || [];
                 const lastRound = rounds[rounds.length - 1];
                 const isPartial = Logic.isRoundPartial(lastRound);
-                const sessionIdx = State.roomData.sessions.findIndex(s => s.id === session.id);
 
                 return `<tr class="text-sm text-gray-500 bg-white font-bold">
                     <td class="py-2 text-center">本局</td>
                     ${players.map((_, i) => {
                         const total = Logic.calculateSessionTotal(session, i);
+                        let content = '', btnClass = 'text-blue-600 hover:text-blue-800';
                         
-                        let btnColorClass = "text-blue-600 hover:text-blue-800"; // 默认深色
-                        let leftVal = total;
-                        let rightVal = "";
-                        let isEmpty = false;
-
-                        if (isPartial) {
-                            const s = lastRound.scores ? lastRound.scores[i] : undefined;
-                            if (s === null || s === undefined) {
-                                isEmpty = true;
-                            } else {
-                                btnColorClass = "text-blue-400 hover:text-blue-600";
-                                leftVal = total - s;
-                                rightVal = s;
+                        if (isPartial && lastRound?.scores) {
+                            const s = lastRound.scores[i];
+                            if (s !== null && s !== undefined) {
+                                btnClass = 'text-blue-400 hover:text-blue-600';
+                                content = this.renderScoreDisplay(total - s, s);
                             }
+                        } else if (!isPartial) {
+                            content = this.renderScoreDisplay(total, '');
                         }
-
-                        let btnContent = "";
-                        if (!isEmpty) {
-                            btnContent = `
-                            <div class="flex items-center justify-start w-full font-mono">
-                                <div class="w-[3ch] text-right">${leftVal}</div>
-                                <div class="px-1 text-center">-</div>
-                                <div class="w-[2ch] text-left">${rightVal}</div>
-                            </div>`;
-                        }
-
+                        
                         return `<td class="text-left pl-2">
-                            <button onclick="App.openAddSingleScoreModal(${sessionIdx}, ${i})" class="${btnColorClass} font-bold px-1 py-1 rounded w-full text-sm whitespace-nowrap block">${btnContent}</button>
+                            <button onclick="App.openAddSingleScoreModal(${sessionIdx}, ${i})" class="${btnClass} font-bold px-1 py-1 rounded w-full text-sm whitespace-nowrap block">${content}</button>
                         </td>`;
                     }).join('')}
-                    <td class="pl-0"><button class="text-sm text-blue-500 font-bold whitespace-nowrap" onclick="App.openScoreModal(${sessionIdx})">记分</button></td>
+                    <td class="pl-0"><button class="text-base text-blue-500 font-bold whitespace-nowrap" onclick="App.openScoreModal(${sessionIdx})">记分</button></td>
                 </tr>`;
             },
 
-            renderHistoryRows(session, players, isCurrent) {
+            /** 渲染历史局明细行 */
+            renderHistoryRows(session, players, isCurrent, sessionIdx) {
                 const history = Logic.calculateRoundHistory(session);
-                const sessionIdx = State.roomData.sessions.findIndex(s => s.id === session.id);
-                
                 return history.reverse().map(rData => {
                     const timeStr = Utils.formatTime(rData.timestamp);
                     const actionCol = isCurrent 
                         ? `<div class="flex flex-col items-center">
-                            <button class="text-sm text-blue-400 font-bold mb-1 whitespace-nowrap" onclick="App.openScoreModal(${sessionIdx}, ${rData.roundIndex})">修改</button>
+                            <button class="text-base text-blue-400 font-bold mb-1 whitespace-nowrap" onclick="App.openScoreModal(${sessionIdx}, ${rData.roundIndex})">修改</button>
                             <span class="text-xs text-gray-400 whitespace-nowrap">${timeStr}</span>
                            </div>`
                         : `<span class="text-xs text-gray-400 whitespace-nowrap">${timeStr}</span>`;
@@ -599,25 +563,27 @@
                 }).join('');
             },
 
+            /** 渲染分数单元格（可点击修改） */
             renderScoreCell(score, playerIdx, beforeTotal, isCurrent, sessionIdx, roundIndex) {
-                 const isScoreEmpty = score === null || score === undefined;
-                 const rightVal = isScoreEmpty ? "" : score;
-                 
-                 const contentInner = `
-                     <div class="flex items-center justify-start w-full ${!isCurrent ? 'px-1' : ''} font-mono">
-                         <div class="w-[3ch] text-right">${beforeTotal}</div>
-                         <div class="px-1 text-center">-</div>
-                         <div class="w-[2ch] text-left">${rightVal}</div>
-                     </div>`;
-
-                 if (isCurrent) {
-                     const btnColorClass = isScoreEmpty ? "text-blue-600 hover:text-blue-800" : "text-blue-400 hover:text-blue-600";
-                     return `<button onclick="App.openSingleScoreModal(${sessionIdx}, ${roundIndex}, ${playerIdx})" class="${btnColorClass} font-bold px-1 py-1 rounded w-full text-sm whitespace-nowrap block">${contentInner}</button>`;
-                 } else {
-                     return contentInner;
-                 }
+                const isScoreEmpty = score === null || score === undefined;
+                const content = this.renderScoreDisplay(beforeTotal, isScoreEmpty ? '' : score);
+                
+                if (!isCurrent) return `<div class="px-1 font-mono">${content}</div>`;
+                
+                const btnClass = isScoreEmpty ? 'text-blue-600 hover:text-blue-800' : 'text-blue-400 hover:text-blue-600';
+                return `<button onclick="App.openSingleScoreModal(${sessionIdx}, ${roundIndex}, ${playerIdx})" class="${btnClass} font-bold px-1 py-1 rounded w-full text-sm whitespace-nowrap block">${content}</button>`;
             },
 
+            /** 生成分数显示HTML（累计分 - 本局分 格式） */
+            renderScoreDisplay(leftVal, rightVal) {
+                return `<div class="flex items-center justify-start w-full font-mono">
+                    <div class="w-[3ch] text-right">${leftVal}</div>
+                    <div class="px-1 text-center">-</div>
+                    <div class="w-[2ch] text-left">${rightVal}</div>
+                </div>`;
+            },
+
+            /** 渲染结算页面 */
             renderCalculate() {
                 const d = State.roomData;
                 const results = Logic.calculateResults(d);
@@ -637,77 +603,138 @@
                             `).join('')}
                         </div>
                         <div class="mb-12">
-                             <span class="inline-block bg-gray-100 text-gray-600 px-4 py-2 rounded-full text-sm font-medium">
-                                活动时长：${durationStr}
-                             </span>
+                             <span class="inline-block bg-gray-100 text-gray-600 px-4 py-2 rounded-full text-sm font-medium">活动时长：${durationStr}</span>
                         </div>
                         <button onclick="App.navigate('room')" class="w-full bg-gray-800 text-white py-4 rounded-xl font-bold shadow-lg">返回房间</button>
-                    </div>
-                `;
+                    </div>`;
             },
 
+            // ==================== 模态框方法 ====================
+
             /**
-             * 显示模态框
+             * 通用模态框显示方法
+             * 所有特定模态框都通过此方法实现
+             * @param {Object} options - 配置选项
              */
-            showModal(title, body, onConfirm, hasInput = false, inputDefault = "", confirmText = "确认", cancelText = "取消") {
+            showModal({ title, body, onConfirm, hasInput = false, inputDefault = '', confirmText = '确认', cancelText = '取消', inputMode = 'text' }) {
                 const titleEl = document.getElementById('modalTitle');
-                const isTip = title === "提示";
+                const isTip = title === '提示';
                 
-                if (isTip) {
-                    titleEl.classList.add('hidden');
-                } else {
-                    titleEl.innerText = title;
-                    titleEl.classList.remove('hidden');
-                }
-
-                const bodyClass = isTip ? "text-gray-900 font-bold mb-4 text-lg" : "text-gray-600 mb-4";
-
+                // 根据是否为"提示"类型调整标题显示
+                isTip ? titleEl.classList.add('hidden') : (titleEl.innerText = title, titleEl.classList.remove('hidden'));
+                
+                // 构建模态框内容
+                const bodyClass = isTip ? 'text-gray-900 font-bold mb-4 text-lg' : 'text-gray-600 mb-4';
                 document.getElementById('modalBody').innerHTML = `
                     <div class="${bodyClass}">${body}</div>
-                    ${hasInput ? `<input type="text" id="modalInput" value="${inputDefault}" class="w-full border p-3 rounded outline-none focus:border-blue-500" autofocus>` : ''}
-                `;
+                    ${hasInput ? `<input type="text" id="modalInput" value="${inputDefault}" inputmode="${inputMode}" class="w-full border p-3 rounded outline-none focus:border-blue-500" autofocus>` : ''}`;
                 
+                // 配置确认按钮
                 const confirmBtn = document.getElementById('modalConfirmBtn');
-                if (confirmText) {
-                    confirmBtn.innerText = confirmText;
-                    confirmBtn.classList.remove('hidden');
-                } else {
-                    confirmBtn.classList.add('hidden');
-                }
+                confirmText ? (confirmBtn.innerText = confirmText, confirmBtn.classList.remove('hidden')) : confirmBtn.classList.add('hidden');
                 
                 document.getElementById('modalCancelBtn').innerText = cancelText;
                 document.getElementById('modal').classList.remove('hidden');
+                document.getElementById('modalFooter').style.display = 'flex';
                 
                 this.modalCallback = onConfirm;
             },
 
-            showRoomListModal(rooms, isCleanMode) {
-                let content = "暂无房间";
-                if (rooms) {
-                    content = Object.keys(rooms).map(id => {
-                        const r = rooms[id];
-                        const players = r.players ? r.players.join('，') : '（未设置玩家）';
-                        if (isCleanMode) {
-                            return `
-                            <div class="flex justify-between items-center mb-2 border-b pb-1">
-                                <div class="flex-1">
-                                    <strong>房间号：${id}</strong><br>
-                                    <span class="text-xs text-gray-500">${players}</span>
-                                </div>
-                                <button onclick="App.confirmDeleteRoom('${id}')" class="bg-red-500 hover:bg-red-600 text-white text-xs px-3 py-1 rounded ml-2 shadow-sm transition-colors">删除</button>
-                            </div>`;
-                        } else {
-                            return `<div class="mb-2 border-b pb-1"><strong>房间号：${id}</strong><br><span class="text-xs text-gray-500">${players}</span></div>`;
-                        }
-                    }).join('');
-                }
-                const title = isCleanMode ? "清理房间列表" : "现有房间";
-                this.showModal(title, content, this.closeModal);
+            /** 关闭模态框 */
+            closeModal() {
+                document.getElementById('modal').classList.add('hidden');
+                this.modalCallback = null;
             },
 
+            /** 显示自定义按钮的模态框 */
+            showCustomModal({ title, body, buttons }) {
+                this.showModal({ title, body, onConfirm: null });
+                document.getElementById('modalFooter').style.display = 'none';
+                
+                // 动态绑定按钮事件
+                setTimeout(() => buttons.forEach(({ id, handler }) => {
+                    const btn = document.getElementById(id);
+                    if (btn) btn.onclick = handler;
+                }), 0);
+            },
+
+            // ==================== 特定模态框快捷方法 ====================
+
+            /** 输入框模态框 */
+            showInputModal(title, body, defaultVal, onConfirm, inputMode = 'text') {
+                this.showModal({ title, body, hasInput: true, inputDefault: defaultVal, onConfirm, inputMode });
+            },
+
+            /** 消息提示模态框 */
+            showMessageModal(title, content, onConfirm) {
+                this.showModal({ title, body: content, onConfirm });
+            },
+
+            /** 确认删除房间模态框 */
+            showDeleteRoomModal(roomId, onConfirm) {
+                this.showModal({
+                    title: '确认删除',
+                    body: `确定要删除房间 <span class="font-bold text-red-500">${roomId}</span> 及其所有数据吗？<br><br><span class="text-xs text-gray-500">此操作不可恢复。</span>`,
+                    onConfirm
+                });
+            },
+
+            /** 房间已存在模态框（提供进入或重新创建选项） */
+            showRoomExistsModal(id, onEnter, onRecreate) {
+                this.showCustomModal({
+                    title: '房间已存在',
+                    body: `<p class="mb-4">房间号 <strong>${id}</strong> 已存在。</p>
+                           <p class="mb-4 text-sm text-gray-600">您可以选择：</p>
+                           <div class="space-y-2">
+                               <button id="modalRecreateBtn" class="w-full bg-gray-100 text-gray-700 py-3 rounded-lg font-bold hover:bg-gray-200">重新创建 (返回)</button>
+                               <button id="modalEnterBtn" class="w-full bg-blue-500 text-white py-3 rounded-lg font-bold hover:bg-blue-600">进入该房间</button>
+                           </div>`,
+                    buttons: [
+                        { id: 'modalRecreateBtn', handler: onRecreate },
+                        { id: 'modalEnterBtn', handler: onEnter }
+                    ]
+                });
+            },
+
+            /** 游戏结束模态框 */
+            showGameOverModal(onBack, onNext) {
+                this.showCustomModal({
+                    title: '提示',
+                    body: `<div class="text-center">
+                        <p class="text-xl font-bold text-red-500 mb-4">本场已结束</p>
+                        <div class="space-y-3">
+                            <button id="modalBackBtn" class="w-full bg-gray-100 text-gray-700 py-3 rounded-lg font-bold hover:bg-gray-200">返回</button>
+                            <button id="modalNextBtn" class="w-full bg-blue-500 text-white py-3 rounded-lg font-bold hover:bg-blue-600">开启下一场次</button>
+                        </div>
+                    </div>`,
+                    buttons: [
+                        { id: 'modalBackBtn', handler: onBack },
+                        { id: 'modalNextBtn', handler: onNext }
+                    ]
+                });
+            },
+
+            /** 房间列表模态框 */
+            showRoomListModal(rooms, isCleanMode) {
+                const content = !rooms ? '暂无房间' : Object.keys(rooms).map(id => {
+                    const r = rooms[id];
+                    const players = r.players?.join('，') || '（未设置玩家）';
+                    return isCleanMode 
+                        ? `<div class="flex justify-between items-center mb-2 border-b pb-1">
+                            <div class="flex-1"><strong>房间号：${id}</strong><br><span class="text-xs text-gray-500">${players}</span></div>
+                            <button onclick="App.confirmDeleteRoom('${id}')" class="bg-red-500 hover:bg-red-600 text-white text-xs px-3 py-1 rounded ml-2 shadow-sm transition-colors">删除</button>
+                           </div>`
+                        : `<div class="mb-2 border-b pb-1"><strong>房间号：${id}</strong><br><span class="text-xs text-gray-500">${players}</span></div>`;
+                }).join('');
+                
+                this.showModal({ title: isCleanMode ? '清理房间列表' : '现有房间', body: content, onConfirm: () => this.closeModal() });
+            },
+
+            /** 使用说明模态框 */
             showUsageModal() {
-                const content = `
-                    <div class="text-sm space-y-3 text-left">
+                this.showModal({
+                    title: '使用方法',
+                    body: `<div class="text-sm space-y-3 text-left">
                         <p><strong>1. 如何创建房间：</strong>点击"创建房间"按钮，输入房间号，点击"确认"按钮。</p>
                         <p><strong>2. 如何加入房间：</strong>点击"加入房间"按钮，输入房间号，点击"确认"按钮。</p>
                         <p><strong>3. 如何修改每分金额：</strong>点击"每分金额"后面的"修改"按钮，输入新的金额，点击"确认"按钮。</p>
@@ -719,111 +746,29 @@
                         <span class="text-xs text-gray-400">个人总场次分数 = 个人在所有场次中的总分数<br>
                         4人总分 = 所有玩家在所有场次中的总分数<br>
                         每分金额 = 用户在软件中设置的每分金额</span></p>
-                    </div>
-                `;
-                this.showModal("使用方法", content, this.closeModal);
+                    </div>`,
+                    onConfirm: () => this.closeModal()
+                });
             },
 
+            /** 关于模态框 */
             showAboutModal() {
-                const content = `
-                    <div class="text-left space-y-2">
+                this.showModal({
+                    title: '关于',
+                    body: `<div class="text-left space-y-2">
                         <p><strong>软件名称：</strong>打答</p>
                         <p><strong>作者：</strong>Kaishen</p>
                         <p><strong>联系作者：</strong>先看"使用方法"，如果有问题，再联系作者。</p>
                         <p><strong>软件目的：</strong>提供一个方便的打答记录和记分软件。</p>
                         <p class="mt-4 italic text-gray-500 text-center">"赢钱非我意，但愿友长存。"</p>
-                    </div>
-                `;
-                this.showModal("关于", content, this.closeModal);
+                    </div>`,
+                    onConfirm: () => this.closeModal()
+                });
             },
 
-            showDeleteRoomModal(roomId, onConfirm) {
-                 const content = `确定要删除房间 <span class="font-bold text-red-500">${roomId}</span> 及其所有数据吗？<br><br><span class="text-xs text-gray-500">此操作不可恢复。</span>`;
-                 this.showModal("确认删除", content, onConfirm);
-            },
+            // ==================== 下拉刷新 ====================
 
-            showRoomExistsModal(id, onEnter, onRecreate) {
-                const modalContent = `
-                    <div class="text-left">
-                        <p class="mb-4">房间号 <strong>${id}</strong> 已存在。</p>
-                        <p class="mb-4 text-sm text-gray-600">您可以选择：</p>
-                        <div class="space-y-2">
-                            <button id="modalRecreateBtn" class="w-full bg-gray-100 text-gray-700 py-3 rounded-lg font-bold hover:bg-gray-200">重新创建 (返回)</button>
-                            <button id="modalEnterBtn" class="w-full bg-blue-500 text-white py-3 rounded-lg font-bold hover:bg-blue-600">进入该房间</button>
-                        </div>
-                    </div>
-                `;
-                this.showModal("房间已存在", modalContent, null);
-                
-                setTimeout(() => {
-                    const rBtn = document.getElementById('modalRecreateBtn');
-                    const eBtn = document.getElementById('modalEnterBtn');
-                    if (rBtn) rBtn.onclick = onRecreate;
-                    if (eBtn) eBtn.onclick = onEnter;
-                }, 0);
-            },
-
-            showUnitScoreModal(currentVal, onConfirm) {
-                this.showModal("修改每分金额", "请输入每分多少钱：", () => {
-                    const val = parseFloat(document.getElementById('modalInput').value);
-                    if (isNaN(val) || val <= 0) return alert("请输入正数");
-                    onConfirm(val);
-                }, true, currentVal);
-            },
-
-            showScoreModal(isEdit, defaultVal, onConfirm) {
-                 this.showModal(isEdit ? "修改分数" : "添加记分", "请输入4个分数（空格或逗号分隔）：", () => {
-                    const scores = Utils.parseInput(document.getElementById('modalInput').value).map(Number);
-                    if (scores.length !== 4 || scores.some(isNaN)) return alert("请输入4个有效数字");
-                    onConfirm(scores);
-                }, true, defaultVal);
-            },
-
-            showSingleScoreInputModal(title, defaultVal, onConfirm) {
-                 this.showModal(title, (defaultVal === "" || defaultVal === undefined) ? "请输入分数：" : "请输入新的分数：", () => {
-                    const val = parseFloat(document.getElementById('modalInput').value);
-                    if (isNaN(val)) return alert("请输入有效数字");
-                    onConfirm(val);
-                }, true, defaultVal);
-            },
-
-            showGameOverModal(onModify, onNext) {
-                const modalContent = `
-                    <div class="text-center">
-                        <p class="text-xl font-bold text-red-500 mb-4">本场已结束</p>
-                        <div class="space-y-3">
-                            <button id="modalModifyBtn" class="w-full bg-gray-100 text-gray-700 py-3 rounded-lg font-bold hover:bg-gray-200">返回</button>
-                            <button id="modalNextBtn" class="w-full bg-blue-500 text-white py-3 rounded-lg font-bold hover:bg-blue-600">开启下一场次</button>
-                        </div>
-                    </div>
-                `;
-                
-                const titleEl = document.getElementById('modalTitle');
-                if (titleEl) {
-                    titleEl.innerText = "提示";
-                    titleEl.classList.remove('hidden');
-                }
-                
-                const bodyEl = document.getElementById('modalBody');
-                if (bodyEl) bodyEl.innerHTML = modalContent;
-                
-                const modalEl = document.getElementById('modal');
-                if (modalEl) modalEl.classList.remove('hidden');
-                
-                const footer = document.querySelector('#modal .flex.justify-end');
-                if(footer) footer.style.display = 'none';
-                
-                setTimeout(() => {
-                    const mBtn = document.getElementById('modalModifyBtn');
-                    const nBtn = document.getElementById('modalNextBtn');
-                    if (mBtn) mBtn.onclick = onModify;
-                    if (nBtn) nBtn.onclick = onNext;
-                }, 0);
-            },
-
-            /**
-             * 下拉刷新设置
-             */
+            /** 设置下拉刷新功能 */
             setupPullToRefresh() {
                 if (this._pullToRefreshSetup) return;
                 this._pullToRefreshSetup = true;
@@ -832,143 +777,96 @@
                 const threshold = 80;
 
                 window.addEventListener('touchstart', e => {
-                    if (window.scrollY === 0 && e.changedTouches && e.changedTouches.length > 0) {
+                    if (window.scrollY === 0 && e.changedTouches?.length > 0) {
                         touchStartY = e.changedTouches[0].screenY;
                     }
                 }, { passive: true });
 
                 window.addEventListener('touchmove', e => {
                     const indicator = document.getElementById('pullToRefreshIndicator');
-                    if (!indicator) return;
-
-                    if (window.scrollY === 0 && touchStartY > 0 && e.changedTouches && e.changedTouches.length > 0) {
-                        const currentY = e.changedTouches[0].screenY;
-                        if (currentY > touchStartY) indicator.classList.remove('hidden');
-                    }
+                    if (!indicator || window.scrollY !== 0 || touchStartY <= 0 || !e.changedTouches?.length) return;
+                    if (e.changedTouches[0].screenY > touchStartY) indicator.classList.remove('hidden');
                 }, { passive: true });
 
                 window.addEventListener('touchend', e => {
                     const indicator = document.getElementById('pullToRefreshIndicator');
-                    if (!indicator) {
+                    if (!indicator || window.scrollY !== 0 || touchStartY <= 0 || !e.changedTouches?.length) {
                         touchStartY = 0;
                         return;
                     }
-
-                    if (window.scrollY === 0 && touchStartY > 0 && e.changedTouches && e.changedTouches.length > 0) {
-                        const touchEndY = e.changedTouches[0].screenY;
-                        if (touchEndY - touchStartY > threshold) {
-                            indicator.innerText = "刷新中...";
-                            if (window.App && window.App.refreshRoom) {
-                                window.App.refreshRoom();
-                            }
-                            setTimeout(() => {
-                                 const ind = document.getElementById('pullToRefreshIndicator');
-                                 if (ind) {
-                                     ind.classList.add('hidden');
-                                     ind.innerText = "下拉刷新...";
-                                 }
-                            }, 1000);
-                        } else {
-                            indicator.classList.add('hidden');
-                        }
+                    
+                    const touchEndY = e.changedTouches[0].screenY;
+                    if (touchEndY - touchStartY > threshold) {
+                        indicator.innerText = '刷新中...';
+                        App.refreshRoom();
+                        setTimeout(() => {
+                            const ind = document.getElementById('pullToRefreshIndicator');
+                            if (ind) { ind.classList.add('hidden'); ind.innerText = '下拉刷新...'; }
+                        }, 1000);
+                    } else {
+                        indicator.classList.add('hidden');
                     }
                     touchStartY = 0;
                 }, { passive: true });
-            },
-
-            showCleanRoomAuthModal(onConfirm) {
-                this.showModal("清理房间", "请输入管理员密码：", () => {
-                    const pwd = document.getElementById('modalInput').value;
-                    onConfirm(pwd);
-                }, true);
-            },
-
-            showStartSessionConfirmModal(onConfirm) {
-                this.showModal("确认开始新场次？", "开始后将无法修改之前的场次数据。", onConfirm);
-            },
-
-            showWaitModal(onConfirm) {
-                this.showModal("提示", "请等待其他人记完分", onConfirm, false, "", null, "返回");
-            },
-
-            showEditScoreConfirmModal(onConfirm) {
-                this.showModal("提示", "这不是新增分数，确定修改吗？", onConfirm, false, "", "确定修改", "返回");
-            },
-
-            showMessageModal(title, content, onConfirm) {
-                this.showModal(title, content, onConfirm);
-            },
-
-            closeModal() {
-                document.getElementById('modal').classList.add('hidden');
-                const footer = document.querySelector('#modal .flex.justify-end');
-                if(footer) footer.style.display = 'flex';
-                this.modalCallback = null;
             }
         };
 
-        // --- 7. Controller: 应用控制器 ---
+        // ============================================================
+        // App: 应用控制器
+        // 协调各模块，处理用户交互
+        // ============================================================
         const App = {
-            /**
-             * 初始化应用
-             */
+            /** 初始化应用 */
             init() {
                 Service.init();
                 View.init();
                 this.navigate('home');
             },
 
-            /**
-             * 导航切换
-             */
+            /** 切换视图 */
             navigate(view) {
                 State.view = view;
                 View.render();
             },
 
-            /**
-             * 切换菜单显示
-             */
+            /** 切换菜单显示状态 */
             toggleMenu() {
                 State.showMenu = !State.showMenu;
                 View.render();
             },
 
+            // ==================== 房间管理 ====================
+
             /**
              * 处理加入房间逻辑
+             * @param {string} id - 房间号
+             * @param {boolean} isCreate - 是否为创建模式
              */
             async handleJoinRoom(id, isCreate = false) {
-                if (!/^\d+$/.test(id)) return alert("房间号必须是数字");
+                if (!/^\d+$/.test(id)) return alert('房间号必须是数字');
                 View.showLoading(true);
 
                 const exists = await Service.checkRoomExists(id);
+                View.showLoading(false);
 
                 if (isCreate && exists) {
-                    View.showRoomExistsModal(id, 
-                        () => this.enterRoom(id), 
-                        () => this.closeModal()
-                    );
-                    return;
+                    View.showRoomExistsModal(id, () => this.enterRoom(id), () => View.closeModal());
                 } else if (!isCreate && !exists) {
-                    View.showLoading(false);
-                    return View.showMessageModal("提示", "房间不存在，请检查房间号", this.closeModal);
+                    View.showMessageModal('提示', '房间不存在，请检查房间号', () => View.closeModal());
+                } else {
+                    this.enterRoom(id);
                 }
-
-                this.enterRoom(id);
             },
 
-            /**
-             * 进入房间核心逻辑
-             */
+            /** 进入房间 */
             enterRoom(id) {
-                this.closeModal();
+                View.closeModal();
                 State.roomId = id;
 
-                // 1. 尝试缓存加载
+                // 1. 优先从缓存加载（快速响应）
                 const cachedData = Service.loadFromCache(id);
-                if (cachedData && cachedData.players) {
+                if (cachedData?.players) {
                     State.roomData = cachedData;
-                    View.showLoading(false);
                     this.initExpandedSessions();
                     if (State.view !== 'calculate') {
                         State.view = 'room';
@@ -976,12 +874,12 @@
                     }
                 }
 
-                // 2. 建立实时连接
+                // 2. 建立实时数据订阅
                 Service.subscribeRoom(id, (val) => {
                     State.roomData = val;
                     View.showLoading(false);
-
-                    if (!State.roomData || !State.roomData.players) {
+                    
+                    if (!val?.players) {
                         this.navigate('setup');
                     } else {
                         this.initExpandedSessions();
@@ -991,199 +889,212 @@
                 });
             },
 
+            /** 初始化展开状态：默认展开最新场次 */
             initExpandedSessions() {
-                if (State.roomData.sessions && State.roomData.sessions.length > 0) {
-                    const latestSessionId = State.roomData.sessions[State.roomData.sessions.length - 1].id;
-                    State.expandedSessions.add(latestSessionId);
+                if (State.roomData.sessions?.length) {
+                    State.expandedSessions.add(State.roomData.sessions[State.roomData.sessions.length - 1].id);
                 }
             },
 
+            /** 退出房间 */
             exitRoom() {
                 Service.unsubscribeRoom(State.roomId);
                 State.reset();
                 this.navigate('home');
             },
 
+            /** 点击表头玩家名字，快速记分 */
+            headerPlayerClick(playerIdx) {
+                const sessionIdx = State.roomData.sessions.findIndex(s => s.id === State.roomData.currentSessionId);
+                if (sessionIdx >= 0) this.openAddSingleScoreModal(sessionIdx, playerIdx);
+            },
+
+            /** 刷新房间数据 */
             refreshRoom() {
                 if (State.roomId) this.enterRoom(State.roomId);
             },
 
-            /**
-             * 提交新房间设置
-             */
+            /** 提交新房间设置 */
             submitSetup(namesStr) {
                 const names = Utils.parseInput(namesStr);
-                if (names.length !== 4) return alert("请输入正好4个靓仔的名字");
+                if (names.length !== 4) return alert('请输入正好4个靓仔的名字');
                 Service.createRoom(State.roomId, names);
             },
 
-            /**
-             * 开启新场次
-             */
+            // ==================== 场次管理 ====================
+
+            /** 开启新场次 */
             startNewSession(skipConfirm = false) {
                 const doStart = () => {
                     const sessions = State.roomData.sessions || [];
                     const newId = sessions.length + 1;
                     sessions.push({ id: newId, rounds: [] });
-                    Service.roomRef(State.roomId).update({
-                        sessions: sessions,
-                        currentSessionId: newId
-                    });
-                    this.closeModal();
+                    Service.roomRef(State.roomId).update({ sessions, currentSessionId: newId });
+                    View.closeModal();
                 };
 
                 if (skipConfirm) doStart();
-                else View.showStartSessionConfirmModal(doStart);
+                else View.showModal({ title: '确认开始新场次？', body: '开始后将无法修改之前的场次数据。', onConfirm: doStart });
             },
 
-            /**
-             * 切换场次展开/收起
-             */
+            /** 切换场次展开/收起 */
             toggleSession(id) {
-                if (State.expandedSessions.has(id)) State.expandedSessions.delete(id);
-                else State.expandedSessions.add(id);
+                State.expandedSessions.has(id) ? State.expandedSessions.delete(id) : State.expandedSessions.add(id);
                 View.render();
             },
 
-            /**
-             * 打开修改每分金额弹窗
-             */
+            // ==================== 记分相关 ====================
+
+            /** 打开修改每分金额弹窗 */
             openUnitScoreModal() {
-                View.showUnitScoreModal(State.roomData.unitScore, (val) => {
+                View.showInputModal('修改每分金额', '请输入每分多少钱：', State.roomData.unitScore, () => {
+                    const val = parseFloat(document.getElementById('modalInput').value);
+                    if (isNaN(val) || val <= 0) return alert('请输入正数');
                     Service.roomRef(State.roomId).update({ unitScore: parseFloat(val.toFixed(1)) });
-                    this.closeModal();
-                });
+                    View.closeModal();
+                }, 'decimal');
             },
 
             /**
-             * 打开记分弹窗 (Session Level)
+             * 打开记分弹窗（一次输入4人分数）
+             * @param {number} sessionIdx - 场次索引
+             * @param {number|null} roundIdx - 局索引（null表示新增）
              */
             openScoreModal(sessionIdx, roundIdx = null) {
                 const isEdit = roundIdx !== null;
                 const currentRounds = State.roomData.sessions[sessionIdx].rounds || [];
+                const players = State.roomData.players;
 
-                // 如果是添加新分数，检查上一局是否未完成
-                if (!isEdit && currentRounds.length > 0) {
-                    const lastRound = currentRounds[currentRounds.length - 1];
-                    if (Logic.isRoundPartial(lastRound)) {
-                        View.showWaitModal(() => this.closeModal());
-                        return;
-                    }
+                // 检查上一局是否未完成（新增时）
+                if (!isEdit && currentRounds.length > 0 && Logic.isRoundPartial(currentRounds[currentRounds.length - 1])) {
+                    View.showModal({ title: '提示', body: '请等待其他人记完分', cancelText: '返回', confirmText: null, onConfirm: () => View.closeModal() });
+                    return;
                 }
 
-                const defaultValue = isEdit ? currentRounds[roundIdx].scores.join(' ') : "";
+                const defaultScores = isEdit ? currentRounds[roundIdx].scores : [null, null, null, null];
+                const bodyHtml = players.map((name, i) => `
+                    <div class="flex items-center mb-3">
+                        <label class="w-20 font-bold text-gray-700 text-base shrink-0">${name}</label>
+                        <input type="number" id="scoreInput${i}" value="${defaultScores[i] ?? ''}"
+                               inputmode="decimal" ${i === 0 ? 'autofocus' : ''}
+                               class="flex-1 border p-3 rounded outline-none focus:border-blue-500 text-center text-lg"
+                               placeholder="分数">
+                    </div>
+                `).join('');
 
-                View.showScoreModal(isEdit, defaultValue, (scores) => {
-                    if (isEdit) {
-                        currentRounds[roundIdx].scores = scores;
-                        currentRounds[roundIdx].timestamp = Date.now();
-                    } else {
-                        currentRounds.push({ 
-                            roundIndex: currentRounds.length, 
-                            scores: scores,
-                            timestamp: Date.now()
+                View.showModal({
+                    title: isEdit ? '修改分数' : '添加记分',
+                    body: bodyHtml,
+                    onConfirm: () => {
+                        const scores = players.map((_, i) => {
+                            const val = document.getElementById(`scoreInput${i}`).value;
+                            return val === '' ? NaN : parseFloat(val);
                         });
-                    }
+                        if (scores.some(isNaN)) return alert('请输入4个有效数字');
 
-                    Service.roomRef(State.roomId).child(`sessions/${sessionIdx}/rounds`).set(currentRounds);
-                    Service.roomRef(State.roomId).child('lastScoreTime').set(Date.now());
-                    this.closeModal();
-                    setTimeout(() => this.checkGameOver(sessionIdx), 500);
+                        if (isEdit) {
+                            currentRounds[roundIdx].scores = scores;
+                            currentRounds[roundIdx].timestamp = Date.now();
+                        } else {
+                            currentRounds.push({ roundIndex: currentRounds.length, scores, timestamp: Date.now() });
+                        }
+
+                        this.saveScores(sessionIdx, currentRounds);
+                        View.closeModal();
+                        setTimeout(() => this.checkGameOver(sessionIdx), 500);
+                    }
                 });
             },
 
-            /**
-             * 打开单人记分弹窗 (本局或明细)
-             */
+            /** 打开单人记分弹窗（本局快速记分） */
             openAddSingleScoreModal(sessionIdx, playerIdx) {
                 const playerName = State.roomData.players[playerIdx];
                 const currentRounds = State.roomData.sessions[sessionIdx].rounds || [];
                 const lastRound = currentRounds[currentRounds.length - 1];
 
-                // 检查是否已有分数的误触保护
-                if (lastRound && lastRound.scores && (lastRound.scores[playerIdx] !== null && lastRound.scores[playerIdx] !== undefined)) {
+                // 已有分数时不允许重复输入
+                if (lastRound?.scores?.[playerIdx] !== null && lastRound?.scores?.[playerIdx] !== undefined) {
                     if (Logic.isRoundPartial(lastRound)) {
-                        View.showWaitModal(() => this.closeModal());
+                        View.showModal({ title: '提示', body: '该玩家已记分，请等待其他玩家', cancelText: '返回', confirmText: null, onConfirm: () => View.closeModal() });
                         return;
                     }
                 }
-                this.showInputModal(sessionIdx, playerIdx, playerName);
-            },
 
-            showInputModal(sessionIdx, playerIdx, playerName) {
-                View.showSingleScoreInputModal(`添加 ${playerName} 的分数`, "", (val) => {
-                    const currentRounds = State.roomData.sessions[sessionIdx].rounds || [];
+                View.showInputModal(`添加 ${playerName} 的分数`, '请输入分数：', '', () => {
+                    const val = parseFloat(document.getElementById('modalInput').value);
+                    if (isNaN(val)) return alert('请输入有效数字');
+
                     let lastRound = currentRounds[currentRounds.length - 1];
-                    let isPartial = Logic.isRoundPartial(lastRound);
-
-                    if (isPartial) {
+                    if (Logic.isRoundPartial(lastRound)) {
                         if (!lastRound.scores) lastRound.scores = [null, null, null, null];
                         lastRound.scores[playerIdx] = val;
                         lastRound.timestamp = Date.now();
                     } else {
                         const newScores = [null, null, null, null];
                         newScores[playerIdx] = val;
-                        currentRounds.push({ 
-                            roundIndex: currentRounds.length, 
-                            scores: newScores,
-                            timestamp: Date.now()
-                        });
+                        currentRounds.push({ roundIndex: currentRounds.length, scores: newScores, timestamp: Date.now() });
                     }
 
-                    Service.roomRef(State.roomId).child(`sessions/${sessionIdx}/rounds`).set(currentRounds);
-                    Service.roomRef(State.roomId).child('lastScoreTime').set(Date.now());
-                    this.closeModal();
+                    this.saveScores(sessionIdx, currentRounds);
+                    View.closeModal();
                     setTimeout(() => this.checkGameOver(sessionIdx), 500);
-                });
+                }, 'decimal');
             },
 
-            /**
-             * 打开修改单人分数弹窗 (历史记录)
-             */
+            /** 打开修改单人分数弹窗（历史记录修改） */
             openSingleScoreModal(sessionIdx, roundIdx, playerIdx) {
                 const currentRounds = State.roomData.sessions[sessionIdx].rounds || [];
                 const currentScore = currentRounds[roundIdx].scores[playerIdx];
                 const playerName = State.roomData.players[playerIdx];
 
+                // 已有分数时需要确认
                 if (currentScore !== null && currentScore !== undefined) {
-                     View.showEditScoreConfirmModal(() => {
-                         this.closeModal();
-                         setTimeout(() => this.showSingleScoreInputModal(sessionIdx, roundIdx, playerIdx, playerName, currentScore), 200);
-                     });
-                     return;
+                    View.showModal({
+                        title: '提示',
+                        body: '这不是新增分数，确定修改吗？',
+                        confirmText: '确定修改',
+                        cancelText: '返回',
+                        onConfirm: () => {
+                            View.closeModal();
+                            setTimeout(() => this.showSingleScoreInputModal(sessionIdx, roundIdx, playerIdx, playerName, currentScore), 200);
+                        }
+                    });
+                    return;
                 }
                 this.showSingleScoreInputModal(sessionIdx, roundIdx, playerIdx, playerName, currentScore);
             },
 
+            /** 显示单人分数输入弹窗 */
             showSingleScoreInputModal(sessionIdx, roundIdx, playerIdx, playerName, currentScore) {
-                View.showSingleScoreInputModal(`修改 ${playerName} 的分数`, currentScore, (val) => {
+                View.showInputModal(`修改 ${playerName} 的分数`, currentScore === undefined ? '请输入分数：' : '请输入新的分数：', currentScore || '', () => {
+                    const val = parseFloat(document.getElementById('modalInput').value);
+                    if (isNaN(val)) return alert('请输入有效数字');
+
                     const currentRounds = State.roomData.sessions[sessionIdx].rounds || [];
                     currentRounds[roundIdx].scores[playerIdx] = val;
                     currentRounds[roundIdx].timestamp = Date.now();
 
-                    Service.roomRef(State.roomId).child(`sessions/${sessionIdx}/rounds`).set(currentRounds);
-                    Service.roomRef(State.roomId).child('lastScoreTime').set(Date.now());
-                    this.closeModal();
+                    this.saveScores(sessionIdx, currentRounds);
+                    View.closeModal();
                     setTimeout(() => this.checkGameOver(sessionIdx), 500);
-                });
+                }, 'decimal');
             },
 
-            /**
-             * 检查游戏结束
-             */
+            /** 保存分数到Firebase */
+            saveScores(sessionIdx, rounds) {
+                Service.roomRef(State.roomId).child(`sessions/${sessionIdx}/rounds`).set(rounds);
+                Service.roomRef(State.roomId).child('lastScoreTime').set(Date.now());
+            },
+
+            /** 检查游戏是否结束 */
             checkGameOver(sessionIdx) {
-                const session = State.roomData.sessions[sessionIdx];
-                if (Logic.isGameOver(session)) {
-                    View.showGameOverModal(
-                        () => this.closeModal(), 
-                        () => this.startNewSession(true)
-                    );
+                if (Logic.isGameOver(State.roomData.sessions[sessionIdx])) {
+                    View.showGameOverModal(() => View.closeModal(), () => this.startNewSession(true));
                 }
             },
 
-            /**
-             * 菜单相关功能
-             */
+            // ==================== 菜单功能 ====================
+
             async menuViewRooms() {
                 this.toggleMenu();
                 View.showLoading(true);
@@ -1194,33 +1105,34 @@
 
             menuCleanRoom() {
                 this.toggleMenu();
-                View.showCleanRoomAuthModal((pwd) => {
+                View.showInputModal('清理房间', '请输入管理员密码：', '', (pwd) => {
                     if (pwd !== 'clean') {
-                        View.showMessageModal("错误", "密码错误，请重试。", this.closeModal);
+                        View.showMessageModal('错误', '密码错误，请重试。', () => View.closeModal());
                         return;
                     }
-                    this.closeModal();
-                    setTimeout(() => this.showCleanRoomList(), 200);
+                    View.closeModal();
+                    setTimeout(async () => {
+                        View.showLoading(true);
+                        const rooms = await Service.getAllRooms();
+                        View.showLoading(false);
+                        View.showRoomListModal(rooms, true);
+                    }, 200);
                 });
-            },
-
-            async showCleanRoomList() {
-                View.showLoading(true);
-                const rooms = await Service.getAllRooms();
-                View.showLoading(false);
-                View.showRoomListModal(rooms, true);
             },
 
             confirmDeleteRoom(roomId) {
                 View.showDeleteRoomModal(roomId, () => {
                     Service.deleteRoom(roomId)
-                        .then(() => {
-                            View.showMessageModal("删除成功", "房间 " + roomId + " 已删除", () => {
-                                this.closeModal();
-                                setTimeout(() => this.showCleanRoomList(), 200);
-                            });
-                        })
-                        .catch(e => View.showMessageModal("删除失败", "删除失败：" + e.message, this.closeModal));
+                        .then(() => View.showMessageModal('删除成功', `房间 ${roomId} 已删除`, () => {
+                            View.closeModal();
+                            setTimeout(async () => {
+                                View.showLoading(true);
+                                const rooms = await Service.getAllRooms();
+                                View.showLoading(false);
+                                View.showRoomListModal(rooms, true);
+                            }, 200);
+                        }))
+                        .catch(e => View.showMessageModal('删除失败', '删除失败：' + e.message, () => View.closeModal()));
                 });
             },
 
@@ -1239,18 +1151,11 @@
             }
         };
 
-        // 将 App 挂载到 window 以便 onclick 调用
+        // 将App挂载到window，使onclick属性可以访问
         window.App = App;
-        
-        // 兼容 Logic 以便模板中调用 (如果有)
-        // 实际上模板中调用的是 App 的方法或者 Logic 的计算方法。
-        // 在 View.renderSessionRow 中用到了 Logic.calculateSessionTotal
-        // 因为模板字符串是在 View 内部生成的，所以可以直接访问 Logic。
-        // 只有 onclick 里的字符串需要全局访问。
-        
+
         // 启动应用
         App.init();
-
     </script>
 </body>
 
