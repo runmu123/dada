@@ -348,7 +348,11 @@
 
             /** 初始化视图：绑定模态框确认按钮事件 */
             init() {
-                document.getElementById('modalConfirmBtn').onclick = () => this.modalCallback?.();
+                document.getElementById('modalConfirmBtn').onclick = () => {
+                    const input = document.getElementById('modalInput');
+                    const val = input ? input.value : undefined;
+                    this.modalCallback?.(val);
+                };
             },
 
             /** 切换加载状态条显示 */
@@ -716,7 +720,7 @@
 
             /** 房间列表模态框 */
             showRoomListModal(rooms, isCleanMode) {
-                const content = !rooms ? '暂无房间' : Object.keys(rooms).map(id => {
+                const listHtml = !rooms ? '暂无房间' : Object.keys(rooms).map(id => {
                     const r = rooms[id];
                     const players = r.players?.join('，') || '（未设置玩家）';
                     return isCleanMode 
@@ -724,8 +728,10 @@
                             <div class="flex-1"><strong>房间号：${id}</strong><br><span class="text-xs text-gray-500">${players}</span></div>
                             <button onclick="App.confirmDeleteRoom('${id}')" class="bg-red-500 hover:bg-red-600 text-white text-xs px-3 py-1 rounded ml-2 shadow-sm transition-colors">删除</button>
                            </div>`
-                        : `<div class="mb-2 border-b pb-1"><strong>房间号：${id}</strong><br><span class="text-xs text-gray-500">${players}</span></div>`;
+                        : `<div class="mb-2 border-b pb-1"><strong>房间号：${id}</strong></div>`;
                 }).join('');
+                
+                const content = `<div class="max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">${listHtml}</div>`;
                 
                 this.showModal({ title: isCleanMode ? '清理房间列表' : '现有房间', body: content, onConfirm: () => this.closeModal() });
             },
