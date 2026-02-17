@@ -738,21 +738,81 @@
 
             /** 使用说明模态框 */
             showUsageModal() {
+                const content = `
+                <div class="text-sm text-left max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
+                    <!-- 快速上手 -->
+                    <div class="mb-6">
+                        <h4 class="text-lg font-bold text-blue-600 mb-2 flex items-center">
+                            <span class="mr-2">🚀</span> 快速上手
+                        </h4>
+                        <div class="space-y-3 text-gray-700">
+                             <div>
+                                <p class="font-bold text-gray-900 mb-1">第一步：进入房间</p>
+                                <ul class="list-disc pl-5 space-y-1 text-gray-600">
+                                    <li><strong>创建房间</strong>：发起人输入数字房间号（如 888）。</li>
+                                    <li><strong>加入房间</strong>：朋友输入相同房间号即可同步。</li>
+                                </ul>
+                             </div>
+                             <div>
+                                <p class="font-bold text-gray-900 mb-1">第二步：设置玩家</p>
+                                <p class="pl-5 text-gray-600">输入4位玩家名字，用空格或逗号隔开。</p>
+                             </div>
+                        </div>
+                    </div>
+
+                    <!-- 记分指南 -->
+                    <div class="mb-6">
+                        <h4 class="text-lg font-bold text-blue-600 mb-2 flex items-center">
+                            <span class="mr-2">📝</span> 记分指南
+                        </h4>
+                        <div class="space-y-3 text-gray-700">
+                             <div>
+                                <p class="font-bold text-gray-900 mb-1">1. 开始记分</p>
+                                <ul class="list-disc pl-5 space-y-1 text-gray-600">
+                                    <li><strong>单人</strong>：点击玩家名字或本局对应的格子直接输入。</li>
+                                    <li><strong>整局</strong>：点击行末“记分”按钮，一次输4个。</li>
+                                </ul>
+                             </div>
+                             <div>
+                                <p class="font-bold text-gray-900 mb-1">2. 开启新场次</p>
+                                <p class="pl-5 text-gray-600">到达100分自动提醒结束，或者点击表头“加场”按钮。注意：旧场次将锁定。</p>
+                             </div>
+                             <div>
+                                <p class="font-bold text-gray-900 mb-1">3. 修改金额</p>
+                                <p class="pl-5 text-gray-600">点击顶部“修改”按钮调整每分金额（默认0.3）。</p>
+                             </div>
+                        </div>
+                    </div>
+
+                    <!-- 自动结算 -->
+                    <div class="mb-6">
+                        <h4 class="text-lg font-bold text-blue-600 mb-2 flex items-center">
+                            <span class="mr-2">💰</span> 自动结算
+                        </h4>
+                        <p class="text-gray-700 pl-1">点击“全部”行的“计算”按钮，系统自动算出输赢金额（正赢负输）及活动时长。</p>
+                    </div>
+
+                    <!-- Q&A -->
+                    <div class="mb-2">
+                        <h4 class="text-lg font-bold text-blue-600 mb-2 flex items-center">
+                            <span class="mr-2">💡</span> 常见问题
+                        </h4>
+                        <div class="space-y-3 text-gray-700 pl-1">
+                            <div>
+                                <p class="font-bold text-gray-900">Q: 记错了分怎么办？</p>
+                                <p class="text-gray-600">A: 点击对应格子或“修改”按钮即可（已锁定场次除外）。</p>
+                            </div>
+                            <div>
+                                <p class="font-bold text-gray-900">Q: 怎么分享给朋友？</p>
+                                <p class="text-gray-600">A: 告诉他们房间号，让他们“加入房间”即可。</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+
                 this.showModal({
                     title: '使用方法',
-                    body: `<div class="text-sm space-y-3 text-left">
-                        <p><strong>1. 如何创建房间：</strong>点击"创建房间"按钮，输入房间号，点击"确认"按钮。</p>
-                        <p><strong>2. 如何加入房间：</strong>点击"加入房间"按钮，输入房间号，点击"确认"按钮。</p>
-                        <p><strong>3. 如何修改每分金额：</strong>点击"每分金额"后面的"修改"按钮，输入新的金额，点击"确认"按钮。</p>
-                        <p><strong>4. 如何添加场次：</strong>点击表格头部的"加场"按钮，点击"确认"按钮。</p>
-                        <p><strong>5. 如何添加本局记分：</strong>点击最新局的"记分"按钮，按顺序输入玩家A、B、C、D的得分，点击"确认"按钮。</p>
-                        <p><strong>6. 如何计算结果：</strong>点击"计算"按钮，弹出一个窗口，显示计算结果。</p>
-                        <p><strong>7. 计算公式：</strong><br>
-                        个人输赢 = (4人总分 - 个人总场次分数 × 4) × 每分金额<br>
-                        <span class="text-xs text-gray-400">个人总场次分数 = 个人在所有场次中的总分数<br>
-                        4人总分 = 所有玩家在所有场次中的总分数<br>
-                        每分金额 = 用户在软件中设置的每分金额</span></p>
-                    </div>`,
+                    body: content,
                     onConfirm: () => this.closeModal()
                 });
             },
